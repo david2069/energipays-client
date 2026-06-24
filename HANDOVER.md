@@ -171,7 +171,9 @@ building features:
 | PowerDiverter | Diverted plug kWh | `{period}.DE_e` |
 | PowerDiverter | Off-peak heating kWh | `{period}.OIE_h` |
 | PowerDiverter | Import max/min/avg | `{period}.IEct_max/min/avg` |
-| Thermino | Temperature (live) | `status.waterTemperature1/2/3` |
+| Thermino | Temperature T1 bottom (live) | `status.waterTemperature1` |
+| Thermino | Temperature T2 middle (live) | `status.waterTemperature2` |
+| Thermino | Temperature T3 top (live) | `status.waterTemperature3` |
 | Thermino | Heating on/off | `status.heaterStatus` |
 | Thermino | SOC % | `status.stateOfCharge` |
 | Thermino | T° setting | `status.temperatureLimit` |
