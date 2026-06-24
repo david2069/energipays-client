@@ -156,6 +156,7 @@ building features:
 
 - `solarStreamA/B/C` reports 0/N/A when solar output is zero — cause unknown (hardware, firmware, LoRa, CT sensor, or cloud API). Don't treat `solarStreamA == 0` as a confirmed zero reading.
 - `offPeakStreamHeaterPower` always 0/N/A — no off-peak tariff configured on this account.
+- `stateOfCharge` is always 0 — Thermino SOC appears unimplemented in the API despite showing in the UI (confirmed 0% with temps T1=56/T2=44/T3=39°C, which clearly isn't empty).
 - Phase fields (`voltageB/C`, `phasePowerB/C`) are 0 on single-phase installs — 0 means "phase absent", not zero watts. Multi-phase installs would have non-zero B/C values. `phasePower` is always the sum across active phases and is the right field to use for single-value display.
 
 ## Modal → API field mapping (all from `statistics()` + `device_status()`, no extra calls needed)
@@ -171,12 +172,15 @@ building features:
 | PowerDiverter | Diverted plug kWh | `{period}.DE_e` |
 | PowerDiverter | Off-peak heating kWh | `{period}.OIE_h` |
 | PowerDiverter | Import max/min/avg | `{period}.IEct_max/min/avg` |
-| Thermino | Temperature T1 bottom (live) | `status.waterTemperature1` |
+| Thermino | Temperature displayed (avg) | average of T1+T2+T3 — computed client-side, not a separate field |
+| Thermino | Temperature T1 bottom (live) | `status.waterTemperature1` — hottest (heating element at base) |
 | Thermino | Temperature T2 middle (live) | `status.waterTemperature2` |
-| Thermino | Temperature T3 top (live) | `status.waterTemperature3` |
+| Thermino | Temperature T3 top (live) | `status.waterTemperature3` — coolest |
 | Thermino | Heating on/off | `status.heaterStatus` |
-| Thermino | SOC % | `status.stateOfCharge` |
+| Thermino | SOC % | `status.stateOfCharge` — **always 0, appears unimplemented** |
 | Thermino | T° setting | `status.temperatureLimit` |
+| Thermino | PD rule name | `device_statuses.customer_rule` name field (e.g. "Daily boost & disable") |
+| Thermino | Off-Peak rule name | separate rule object — "Empty" when none configured |
 
 ## Immediate next steps (in order)
 1. **Verify login end-to-end:**
