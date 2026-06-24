@@ -84,8 +84,14 @@ Access token lifetime is **300s**. `refresh_token` is an opaque (non-JWT) string
 
 Main API (`energipays.com`, encrypted, Bearer):
 - `POST /api/auth/login` — login (see above)
-- `GET  /api/users/me`
-- `POST /api/users/settings` — update settings (encrypted form payload)
+- `GET  /api/users/me` — returns name, email, phone, address, role ("Customer")
+- `POST /api/users/settings` — update settings (encrypted form payload). Known fields from Profile page:
+  - `language` — e.g. `"en"`
+  - `temperature_format` — `"celsius"` or `"fahrenheit"`
+  - Push notification toggles (bool): `device_status`, `off_peak_status`, `device_online_status`,
+    `device_temperature_threshold_status`, `boost_status`, `done_status`, `new_chat_message`
+  - `device_temperature_threshold` — numeric °C (e.g. `40`); triggers threshold notification
+  - Endpoint/field names are guesses from UI labels — capture a HAR while saving settings to confirm exact keys.
 - `GET  /api/devices`
 - `GET  /api/rules`
 - `GET  /api/groups`
