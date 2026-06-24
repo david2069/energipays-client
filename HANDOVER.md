@@ -143,6 +143,27 @@ building features:
   form-urlencoded `payload=`, no stale Authorization header.
 - Fixed `_post()` to send encrypted bodies as form-urlencoded `payload=`.
 
+## Known data gaps
+
+- `solarStreamA/B/C` reports 0/N/A when solar output is zero — cause unknown (hardware, firmware, LoRa, CT sensor, or cloud API). Don't treat `solarStreamA == 0` as a confirmed zero reading.
+- `offPeakStreamHeaterPower` always 0/N/A — no off-peak tariff configured on this account.
+
+## Modal → API field mapping (all from `statistics()` + `device_status()`, no extra calls needed)
+
+| Modal | UI label | API field |
+|-------|----------|-----------|
+| Grid | Current import kW (live) | `status.phasePower` |
+| Grid | Export today/yesterday/7d/14d kWh | `{period}.EEct` |
+| Grid | Import today/yesterday/7d/14d kWh | `{period}.IEct` |
+| PowerDiverter | Diverted heating kWh | `{period}.DE_h` |
+| PowerDiverter | Diverted plug kWh | `{period}.DE_e` |
+| PowerDiverter | Off-peak heating kWh | `{period}.OIE_h` |
+| PowerDiverter | Import max/min/avg | `{period}.IEct_max/min/avg` |
+| Thermino | Temperature (live) | `status.waterTemperature1/2/3` |
+| Thermino | Heating on/off | `status.heaterStatus` |
+| Thermino | SOC % | `status.stateOfCharge` |
+| Thermino | T° setting | `status.temperatureLimit` |
+
 ## Immediate next steps (in order)
 1. **Verify login end-to-end:**
    ```bash
