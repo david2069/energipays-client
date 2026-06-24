@@ -92,5 +92,5 @@ python cli.py -e you@example.com -p secret me
 python cli.py devices                     # uses ENERGIPAYS_EMAIL/PASSWORD
 python cli.py -e you@example.com --password-stdin me   # password via stdin (safer)
 python cli.py stats <device_id> --from 2026-06-01 --to 2026-06-24
-python cli.py boost <device_id> --period 30 --yes
+python cli.py boost <device_id> --period 1 --yes   # 1=1h, 2=2h, 3=3h
 ```
