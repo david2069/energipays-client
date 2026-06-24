@@ -90,7 +90,10 @@ Main API (`energipays.com`, encrypted, Bearer):
   - `temperature_format` — `"celsius"` or `"fahrenheit"`
   - Push notification toggles (bool): `device_status`, `off_peak_status`, `device_online_status`,
     `device_temperature_threshold_status`, `boost_status`, `done_status`, `new_chat_message`
-  - `device_temperature_threshold` — numeric °C (e.g. `40`); triggers threshold notification
+  - `device_temperature_threshold` — numeric °C (e.g. `40`)
+  - **Push notifications are non-functional** — toggles exist in the UI but no notifications have
+    ever been received. Likely Energipays has not configured/paid for an APNs or FCM push service.
+    Don't rely on these for any integration.
   - Endpoint/field names are guesses from UI labels — capture a HAR while saving settings to confirm exact keys.
 - `GET  /api/devices`
 - `GET  /api/rules`
