@@ -58,23 +58,45 @@ def _make_client(args) -> EnergipaysClient:
     return client
 
 
+def _first_device(client: EnergipaysClient) -> tuple[str, str]:
+    """Return (device_id, data_server) for the first device. Exits if none found."""
+    resp = client.devices()
+    devices = resp if isinstance(resp, list) else resp.get("data", [])
+    if not devices:
+        sys.exit("No devices found on this account.")
+    dev = devices[0]
+    return dev["id"], dev.get("server", "https://data-au-1.energipays.com")
+
+
 # ── Subcommand handlers ─────────────────────────────────────────────────────────
 
 def cmd_me(c, a):            return c.me()
 def cmd_devices(c, a):       return c.devices()
-def cmd_device(c, a):        return c.device(a.device_id)
 def cmd_rules(c, a):         return c.rules()
 def cmd_logs(c, a):          return c.logs({"limit": a.limit} if a.limit else {})
-def cmd_status(c, a):        return c.device_status(a.device_ids)
-def cmd_statistics(c, a):    return c.statistics(a.device_id, a.server, tz=a.tz, phase=a.phase)
-def cmd_stats(c, a):         return c.stats(a.device_id, a.date_from, a.date_to,
-                                            a.server, tz=a.tz, data_type=a.data_type, phase=a.phase)
 
+def cmd_device(c, a):
+    dev_id = a.device_id or _first_device(c)[0]
+    return c.device(dev_id)
+
+def cmd_status(c, a):
+    ids = a.device_ids or [_first_device(c)[0]]
+    return c.device_status(ids)
+
+def cmd_statistics(c, a):
+    dev_id, server = (a.device_id, a.server) if a.device_id else _first_device(c)
+    return c.statistics(dev_id, a.server or server, tz=a.tz, phase=a.phase)
+
+def cmd_stats(c, a):
+    dev_id, server = (a.device_id, a.server) if a.device_id else _first_device(c)
+    return c.stats(dev_id, a.date_from, a.date_to,
+                   a.server or server, tz=a.tz, data_type=a.data_type, phase=a.phase)
 
 def cmd_boost(c, a):
     if not a.yes:
         sys.exit("Refusing to send a boost command without --yes (this controls a device).")
-    return c.boost_device(a.device_id, a.server, period=a.period)
+    dev_id, server = (a.device_id, a.server) if a.device_id else _first_device(c)
+    return c.boost_device(dev_id, a.server or server, period=a.period)
 
 
 def cmd_key(c, a):
@@ -110,23 +132,23 @@ def build_parser() -> argparse.ArgumentParser:
     add("rules", cmd_rules, "list automation rules")
     add("key", cmd_key, "resolve and print the AES key (base64)")
 
-    sp = add("device", cmd_device, "show a single device")
-    sp.add_argument("device_id")
+    sp = add("device", cmd_device, "show a single device (defaults to first device)")
+    sp.add_argument("device_id", nargs="?", default=None)
 
     sp = add("logs", cmd_logs, "fetch energy/telemetry logs")
     sp.add_argument("--limit", type=int, default=5)
 
-    sp = add("status", cmd_status, "live device status (data server, unencrypted)")
-    sp.add_argument("device_ids", nargs="+", metavar="device_id")
+    sp = add("status", cmd_status, "live device status (defaults to first device)")
+    sp.add_argument("device_ids", nargs="*", metavar="device_id")
 
-    sp = add("statistics", cmd_statistics, "aggregate totals for a device (data server)")
-    sp.add_argument("device_id")
+    sp = add("statistics", cmd_statistics, "aggregate totals (defaults to first device)")
+    sp.add_argument("device_id", nargs="?", default=None)
     sp.add_argument("--server", help="override the device data server URL")
     sp.add_argument("--tz", default="Australia/Sydney")
     sp.add_argument("--phase", default="sum")
 
-    sp = add("stats", cmd_stats, "per-day chart data for a device (data server)")
-    sp.add_argument("device_id")
+    sp = add("stats", cmd_stats, "per-day chart data (defaults to first device)")
+    sp.add_argument("device_id", nargs="?", default=None)
     sp.add_argument("--from", dest="date_from", required=True, metavar="YYYY-MM-DD")
     sp.add_argument("--to", dest="date_to", required=True, metavar="YYYY-MM-DD")
     sp.add_argument("--server", help="override the device data server URL")
@@ -134,8 +156,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--data-type", dest="data_type", default="power")
     sp.add_argument("--phase", default="sum")
 
-    sp = add("boost", cmd_boost, "trigger a timed boost on a device")
-    sp.add_argument("device_id")
+    sp = add("boost", cmd_boost, "trigger a timed boost (defaults to first device)")
+    sp.add_argument("device_id", nargs="?", default=None)
     sp.add_argument("--period", type=int, default=1, choices=[1, 2, 3],
                     help="boost duration: 1=1h, 2=2h, 3=3h (default: 1h)")
     sp.add_argument("--server", help="override the device data server URL")
