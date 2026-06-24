@@ -156,12 +156,15 @@ building features:
 
 - `solarStreamA/B/C` reports 0/N/A when solar output is zero — cause unknown (hardware, firmware, LoRa, CT sensor, or cloud API). Don't treat `solarStreamA == 0` as a confirmed zero reading.
 - `offPeakStreamHeaterPower` always 0/N/A — no off-peak tariff configured on this account.
+- Phase fields (`voltageB/C`, `phasePowerB/C`) are 0 on single-phase installs — 0 means "phase absent", not zero watts. Multi-phase installs would have non-zero B/C values. `phasePower` is always the sum across active phases and is the right field to use for single-value display.
 
 ## Modal → API field mapping (all from `statistics()` + `device_status()`, no extra calls needed)
 
 | Modal | UI label | API field |
 |-------|----------|-----------|
-| Grid | Current import kW (live) | `status.phasePower` |
+| Grid | Current import kW (live, total) | `status.phasePower` (sum of all active phases) |
+| Grid | Per-phase voltage (V) | `status.voltageA/B/C` (0 = phase not present) |
+| Grid | Per-phase power (kW) | `status.phasePowerA/B/C` (0 = phase not present) |
 | Grid | Export today/yesterday/7d/14d kWh | `{period}.EEct` |
 | Grid | Import today/yesterday/7d/14d kWh | `{period}.IEct` |
 | PowerDiverter | Diverted heating kWh | `{period}.DE_h` |
