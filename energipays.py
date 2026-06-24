@@ -1,5 +1,10 @@
 """
-Energipays API client — reverse-engineered from main.9860a158.chunk.js
+Energipays API client — standalone, credential-based.
+
+Authentication: email/password login (POST /api/users/login) which returns a
+short-lived JWT access token plus a refresh token. The client logs in lazily,
+auto-refreshes when the JWT nears expiry, and re-logs-in on a 401. Provide
+credentials via ENERGIPAYS_EMAIL / ENERGIPAYS_PASSWORD or constructor args.
 
 Encryption: AES-256-CBC via CryptoJS.
 Wire format (both directions): base64( JSON({ value, iv, mac }) )
@@ -7,8 +12,8 @@ Wire format (both directions): base64( JSON({ value, iv, mac }) )
   iv    = base64(random 16-byte IV)
   mac   = HMAC-SHA256(key, iv_b64 + value_b64).hexdigest()
 
-Set ENERGIPAYS_KEY env var to the base64-encoded 32-byte AES key extracted
-from the JS bundle (key found in main.*.chunk.js, variable A in CryptoJS block).
+The AES key is resolved at runtime (env var -> cache -> dynamic extraction from
+the deployed JS bundle); it is never hardcoded. See _ensure_key / extract_key.py.
 """
 
 from __future__ import annotations
@@ -32,9 +37,25 @@ BASE_URL = "https://energipays.com"
 CMD_IDLE  = "1"   # standby / idle
 CMD_BOOST = "2"   # boost (uses boost_power / temperature_min)
 
-# AES-256-CBC key — loaded from env var. Extract from main.*.chunk.js:
-#   search for: y.a.enc.Base64.parse("...")  (the first 44-char base64 string near CryptoJS)
-_KEY_B64 = os.environ.get("ENERGIPAYS_KEY", "")
+# AES-256-CBC key. Resolution order (see EnergipaysClient._ensure_key):
+#   1. ENERGIPAYS_KEY env var
+#   2. .key_cache.json (written by a previous dynamic extraction)
+#   3. dynamic extraction from the deployed JS bundle (extract_key.find_key),
+#      validated by round-trip decrypting a live response.
+# The key is NOT hardcoded — it lives in client-side JS and rotates on each deploy.
+_KEY_CACHE = pathlib.Path(__file__).parent / ".key_cache.json"
+
+
+def _load_key_cache() -> str:
+    if _KEY_CACHE.exists():
+        try:
+            return json.loads(_KEY_CACHE.read_text()).get("key", "")
+        except Exception:
+            pass
+    return ""
+
+
+_KEY_B64 = os.environ.get("ENERGIPAYS_KEY", "") or _load_key_cache()
 _KEY = base64.b64decode(_KEY_B64) if _KEY_B64 else b""
 
 
@@ -44,13 +65,15 @@ def set_key(b64_key: str) -> None:
     _KEY = base64.b64decode(b64_key)
 
 
-# ── Token bootstrap ───────────────────────────────────────────────────────────
-# If login fails (e.g. account uses SSO), extract the JWT from the browser:
-#   Object.entries(localStorage).forEach(([k,v])=>console.log(k,v))
-# then pass it via ENERGIPAYS_TOKEN env var or set_token().
+# ── Credentials & token cache ───────────────────────────────────────────────────
+# The client authenticates by email/password (no browser). Credentials come from
+# env vars or constructor args. Tokens obtained from login/refresh are cached so a
+# subsequent run can refresh instead of re-sending the password.
+_EMAIL = os.environ.get("ENERGIPAYS_EMAIL", "")
+_PASSWORD = os.environ.get("ENERGIPAYS_PASSWORD", "")
 
-# Token bootstrap — tries env var first, then local token cache written by token_server.py
 _TOKEN_CACHE = pathlib.Path(__file__).parent / ".token_cache.json"
+
 
 def _load_token_cache() -> tuple[str, str]:
     """Load (access_token, refresh_token) from .token_cache.json if it exists."""
@@ -61,23 +84,6 @@ def _load_token_cache() -> tuple[str, str]:
         except Exception:
             pass
     return "", ""
-
-# ENERGIPAYS_TOKEN may be the raw JWT or the full JSON blob from localStorage.tokens
-_raw_token_env = os.environ.get("ENERGIPAYS_TOKEN", "")
-if _raw_token_env.startswith("{"):
-    _BOOTSTRAP_TOKEN = json.loads(_raw_token_env).get("access_token", "")
-else:
-    _BOOTSTRAP_TOKEN = _raw_token_env
-
-_cache_access, _cache_refresh = _load_token_cache()
-if not _BOOTSTRAP_TOKEN and _cache_access:
-    _BOOTSTRAP_TOKEN = _cache_access
-
-_BOOTSTRAP_REFRESH = os.environ.get("ENERGIPAYS_REFRESH_TOKEN", "") or _cache_refresh
-# URL-encoded value from document.cookie — we URL-decode it for the X-XSRF-TOKEN header
-_XSRF_RAW = os.environ.get("ENERGIPAYS_XSRF_TOKEN", "")
-_XSRF_TOKEN = urllib.parse.unquote(_XSRF_RAW) if _XSRF_RAW else ""
-_SESSION_RAW = os.environ.get("ENERGIPAYS_SESSION", "")
 
 
 # ── Crypto helpers ────────────────────────────────────────────────────────────
@@ -110,14 +116,29 @@ def encrypt(data: str) -> str:
     ).decode()
 
 
+def _jwt_exp(token: str) -> int | None:
+    """Return the JWT ``exp`` (unix seconds) without verifying the signature."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)  # restore base64url padding
+        return int(json.loads(base64.urlsafe_b64decode(payload)).get("exp"))
+    except Exception:
+        return None
+
+
 # ── Client ────────────────────────────────────────────────────────────────────
 
 class EnergipaysClient:
     """Authenticated Energipays API client."""
 
-    def __init__(self, base_url: str = BASE_URL, data_server: str = "https://data-au-1.energipays.com"):
+    def __init__(self, email: str | None = None, password: str | None = None,
+                 base_url: str = BASE_URL,
+                 data_server: str = "https://data-au-1.energipays.com",
+                 auto_login: bool = True):
         self.base_url = base_url.rstrip("/")
         self._data_server = data_server.rstrip("/")
+        self._email = email if email is not None else _EMAIL
+        self._password = password if password is not None else _PASSWORD
         self.session = requests.Session()
         self.session.headers.update({
             "Content-Type": "application/json",
@@ -125,47 +146,85 @@ class EnergipaysClient:
             "Origin": base_url,
             "Referer": base_url + "/my-devices",
         })
-        if _XSRF_TOKEN:
-            self.session.headers["X-XSRF-TOKEN"] = _XSRF_TOKEN
-            self.session.cookies.set("XSRF-TOKEN", _XSRF_RAW, domain="energipays.com")
-        if _SESSION_RAW:
-            self.session.cookies.set("prod_main_session", _SESSION_RAW, domain="energipays.com")
+        self._resolving_key = False  # re-entry guard for _ensure_key()
         self._token: str | None = None
-        self._refresh_token: str | None = _BOOTSTRAP_REFRESH or None
-        if _BOOTSTRAP_TOKEN:
-            # Use supplied access token directly; refresh on 401 if refresh token available
-            self._token = _BOOTSTRAP_TOKEN
-            self.session.headers["Authorization"] = f"Bearer {_BOOTSTRAP_TOKEN}"
-        elif _BOOTSTRAP_REFRESH:
-            # No access token — refresh immediately to get one
-            self.refresh()
+        self._refresh_token: str | None = None
 
-    @classmethod
-    def from_chrome(cls, **kwargs) -> "EnergipaysClient":
-        """Create a client by pulling a fresh token from the logged-in Chrome tab via CDP."""
-        from cdp_tokens import get_tokens
-        tokens = get_tokens(save=True)
-        access = tokens.get("access_token", "")
-        refresh = tokens.get("refresh_token", "")
-        if not access:
-            raise RuntimeError("No access_token in Chrome localStorage — is the tab logged in?")
-        import os
-        os.environ.setdefault("ENERGIPAYS_KEY", "w0oBD4tKUu8EqNF0sjiqxGwlkv92ZUXV0cBSjdwLqwA=")
-        client = cls(**kwargs)
-        client._token = access
-        client._refresh_token = refresh
-        client.session.headers["Authorization"] = f"Bearer {access}"
-        return client
+        # Reuse cached tokens if present, so we don't re-send the password each run.
+        cache_access, cache_refresh = _load_token_cache()
+        if cache_refresh:
+            self._refresh_token = cache_refresh
+        if cache_access:
+            self._set_access_token(cache_access)
+
+        if auto_login:
+            # Lazy auth: only hit the network if we don't already have a live token.
+            if self._token_expired():
+                self._ensure_token()
 
     # ── Auth ──────────────────────────────────────────────────────────────────
 
-    def login(self, email: str, password: str) -> dict:
-        """POST /api/users/login — customer login; stores Bearer token."""
-        resp = self._post("/api/users/login", {"username": email, "password": password}, auth=False)
+    def _set_access_token(self, token: str) -> None:
+        self._token = token
+        self.session.headers["Authorization"] = f"Bearer {token}"
+
+    def _store_tokens(self, access: str, refresh: str | None) -> None:
+        """Set the access token and persist (access, refresh) to the cache."""
+        self._set_access_token(access)
+        if refresh:
+            self._refresh_token = refresh
+        try:
+            _TOKEN_CACHE.write_text(json.dumps({
+                "access_token": access,
+                "refresh_token": self._refresh_token or "",
+            }))
+        except Exception:
+            pass
+
+    def _ensure_csrf(self) -> None:
+        """Obtain the Laravel XSRF-TOKEN + session cookie and set X-XSRF-TOKEN.
+
+        Login uses Sanctum session/CSRF protection: the server rejects the POST as
+        "Unauthenticated" unless the request carries the session cookie and a
+        matching X-XSRF-TOKEN header. We fetch these programmatically (no browser).
+        """
+        for path in ("/sanctum/csrf-cookie", "/"):
+            try:
+                self.session.get(self.base_url + path, timeout=15)
+            except Exception:
+                continue
+            xsrf = self.session.cookies.get("XSRF-TOKEN")
+            if xsrf:
+                # Browser sends the URL-decoded cookie value as the header.
+                self.session.headers["X-XSRF-TOKEN"] = urllib.parse.unquote(xsrf)
+                return
+
+    def login(self, email: str | None = None, password: str | None = None) -> dict:
+        """POST /api/auth/login — Sanctum/CSRF credential login; stores + caches tokens.
+
+        Wire format mirrors the SPA: encrypted payload sent as a form field
+        (``payload=<base64>``, Content-Type x-www-form-urlencoded), with the CSRF
+        header/cookies established first.
+        """
+        email = email if email is not None else self._email
+        password = password if password is not None else self._password
+        if not email or not password:
+            raise RuntimeError(
+                "No credentials — set ENERGIPAYS_EMAIL / ENERGIPAYS_PASSWORD "
+                "or pass email=/password= to EnergipaysClient()."
+            )
+        self._ensure_key()
+        self._ensure_csrf()
+        payload = encrypt(json.dumps({"username": email, "password": password}))
+        r = self.session.post(
+            self.base_url + "/api/auth/login",
+            data=urllib.parse.urlencode({"payload": payload}),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        resp = self._handle(r)
         token = resp.get("access_token") or resp.get("token") or resp.get("accessToken")
         if token:
-            self._token = token
-            self.session.headers["Authorization"] = f"Bearer {token}"
+            self._store_tokens(token, resp.get("refresh_token"))
         return resp
 
     def refresh(self) -> dict:
@@ -176,24 +235,83 @@ class EnergipaysClient:
                           {"refresh_token": self._refresh_token}, auth=False)
         token = resp.get("access_token") or resp.get("token")
         if token:
-            self._token = token
-            self.session.headers["Authorization"] = f"Bearer {token}"
-            if resp.get("refresh_token"):
-                self._refresh_token = resp["refresh_token"]
-            # Persist refreshed tokens so next run doesn't need a new paste
-            try:
-                _TOKEN_CACHE.write_text(json.dumps({
-                    "access_token": token,
-                    "refresh_token": self._refresh_token or "",
-                }))
-            except Exception:
-                pass
+            self._store_tokens(token, resp.get("refresh_token"))
         return resp
 
+    def _token_expired(self, skew: int = 30) -> bool:
+        """True if there's no token or its JWT exp is within ``skew`` seconds.
+
+        Returns False for non-JWT/opaque tokens (can't tell — rely on 401 handling).
+        """
+        if not self._token:
+            return True
+        exp = _jwt_exp(self._token)
+        if exp is None:
+            return False
+        import time
+        return time.time() >= (exp - skew)
+
     def _ensure_token(self) -> None:
-        """Auto-refresh if we have a refresh token but the access token was rejected."""
+        """Ensure a usable access token: refresh first, then re-login with creds.
+
+        Called both proactively (when the JWT is near expiry) and reactively (on a
+        401). Tries the refresh_token grant first; if that is unavailable or leaves
+        the token still expired, falls back to a fresh credential login.
+        """
         if self._refresh_token:
             self.refresh()
+        if self._token_expired() and self._email and self._password:
+            self.login()
+
+    # ── Key resolution ──────────────────────────────────────────────────────────
+
+    def _fetch_encrypted_payload(self, path: str = "/api/users/me") -> str:
+        """Fetch a raw encrypted ``payload`` string without decrypting it.
+
+        Used to validate AES key candidates — needs a valid token but NOT the key.
+        Bypasses _ensure_key()/_handle() to avoid recursion.
+        """
+        r = self.session.get(self.base_url + path)
+        if r.status_code == 401 and self._can_reauth():
+            self._ensure_token()
+            r = self.session.get(self.base_url + path)
+        r.raise_for_status()
+        payload = r.json().get("payload")
+        if not payload:
+            raise RuntimeError(f"{path} did not return an encrypted payload to validate against")
+        return payload
+
+    def _ensure_key(self, sample_path: str = "/api/users/me") -> None:
+        """Make sure the module-level AES key is set.
+
+        Order: already-set / env / cache (handled at import) -> dynamic extraction
+        from the deployed JS bundle, validated by round-trip decrypting a real
+        response. The correct key is the only candidate that yields valid PKCS#7
+        padding + parseable JSON.
+        """
+        if _KEY or self._resolving_key:
+            return
+        self._resolving_key = True
+        try:
+            from extract_key import find_key
+
+            sample = self._fetch_encrypted_payload(sample_path)
+
+            def validator(key_bytes: bytes) -> bool:
+                try:
+                    outer = json.loads(base64.b64decode(sample))
+                    ct = base64.b64decode(outer["value"])
+                    iv = base64.b64decode(outer["iv"])
+                    pt = unpad(AES.new(key_bytes, AES.MODE_CBC, iv).decrypt(ct), AES.block_size)
+                    json.loads(pt.decode("utf-8"))
+                    return True
+                except Exception:
+                    return False
+
+            key_b64 = find_key(self.base_url, validator=validator, session=self.session)
+            set_key(key_b64)
+        finally:
+            self._resolving_key = False
 
     # ── Profile ───────────────────────────────────────────────────────────────
 
@@ -304,10 +422,11 @@ class EnergipaysClient:
         return self._handle_raw(r)
 
     def boost_device(self, device_id: str, data_server: str | None = None,
-                     period: int = 60) -> dict:
+                     period: int = 1) -> dict:
         """POST data-server/api/client/device/{id}/boost — trigger a timed boost.
 
-        ``period`` in minutes.
+        ``period``: 1 = 1 hour, 2 = 2 hours, 3 = 3 hours (matches the app UI presets).
+        Power level is controlled by the device's ``boost_power`` setting (set via the app).
         """
         base = (data_server or self._data_server).rstrip("/")
         r = self.session.post(
@@ -328,19 +447,39 @@ class EnergipaysClient:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
+    def _can_reauth(self) -> bool:
+        return bool(self._refresh_token) or bool(self._email and self._password)
+
     def _get(self, path: str, params: dict | None = None) -> dict:
+        if self._token_expired():           # proactive: refresh before sending
+            self._ensure_token()
+        self._ensure_key()
         r = self.session.get(self.base_url + path, params=params)
-        if r.status_code == 401 and self._refresh_token:
+        if r.status_code == 401 and self._can_reauth():   # reactive fallback
             self._ensure_token()
             r = self.session.get(self.base_url + path, params=params)
         return self._handle(r)
 
     def _post(self, path: str, body: dict, auth: bool = True) -> dict:
+        if auth:
+            if self._token_expired():
+                self._ensure_token()
+            self._ensure_key()
         payload = encrypt(json.dumps(body))
-        r = self.session.post(self.base_url + path, json={"payload": payload})
-        if r.status_code == 401 and auth and self._refresh_token:
+        # Encrypted POSTs go out as form-urlencoded `payload=<base64>` (confirmed
+        # via HAR for /api/auth/login and /api/users/settings), NOT JSON.
+        data = urllib.parse.urlencode({"payload": payload})
+        # Unauthenticated requests (login/refresh) must NOT carry a stale/invalid
+        # Bearer header — the server rejects any request with a bad token as 401
+        # "Unauthenticated" before checking credentials. Strip it for auth=False.
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        if not auth:
+            headers["Authorization"] = None
+        r = self.session.post(self.base_url + path, data=data, headers=headers)
+        if r.status_code == 401 and auth and self._can_reauth():
             self._ensure_token()
-            r = self.session.post(self.base_url + path, json={"payload": payload})
+            r = self.session.post(self.base_url + path, data=data,
+                                  headers={"Content-Type": "application/x-www-form-urlencoded"})
         return self._handle(r)
 
     def _handle(self, r: requests.Response) -> dict:
@@ -380,31 +519,27 @@ class EnergipaysClient:
 if __name__ == "__main__":
     import getpass, sys
 
-    aes_key = os.environ.get("ENERGIPAYS_KEY")
-    if not aes_key:
-        aes_key = input("AES key (base64, from JS bundle): ").strip()
-        set_key(aes_key)
-
-    client = EnergipaysClient()
-
-    if _BOOTSTRAP_TOKEN:
-        print(f"→ using access token ({_BOOTSTRAP_TOKEN[:40]}...)")
-    elif _BOOTSTRAP_REFRESH:
-        if not client._token:
-            print("Token refresh failed — get a fresh refresh_token from browser", file=sys.stderr)
-            sys.exit(1)
-        print(f"→ refreshed token ({client._token[:40]}...)")
-    elif _SESSION_RAW:
-        print("→ using session cookie (no Bearer token)")
+    if _KEY:
+        print(f"→ AES key loaded ({'env' if os.environ.get('ENERGIPAYS_KEY') else 'cache'})")
     else:
-        email = input("Email: ").strip()
-        password = getpass.getpass("Password: ")
-        print("\n→ /api/users/login")
-        login_resp = client.login(email, password)
+        print("→ no AES key set — will auto-extract from JS bundle after auth")
+
+    # Credentials: env vars first, prompt only if missing.
+    email = _EMAIL or input("Email: ").strip()
+    password = _PASSWORD or getpass.getpass("Password: ")
+
+    client = EnergipaysClient(email=email, password=password, auto_login=False)
+    print("\n→ /api/users/login")
+    login_resp = client.login()
+    # Check the login RESPONSE for a token — not client._token, which may be a
+    # stale token preloaded from .token_cache.json and would mask a failed login.
+    login_token = (login_resp.get("access_token") or login_resp.get("token")
+                   or login_resp.get("accessToken")) if isinstance(login_resp, dict) else None
+    if not login_token:
         print(json.dumps(login_resp, indent=2))
-        if not client._token:
-            print("Login failed.", file=sys.stderr)
-            sys.exit(1)
+        print("Login failed.", file=sys.stderr)
+        sys.exit(1)
+    print(f"→ authenticated ({client._token[:40]}...)")
 
     # Pull device list first so we can show per-device telemetry
     print("\n→ /api/devices")

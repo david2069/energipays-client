@@ -2,7 +2,9 @@
 
 ## Project
 
-Python client library for the Energipays API (https://energipays.com), reverse-engineered from the React SPA bundle. Handles AES-256-CBC encrypted requests/responses and token management via Chrome DevTools Protocol.
+Standalone Python client library for the Energipays API (https://energipays.com),
+reverse-engineered from the React SPA bundle. Handles AES-256-CBC encrypted
+requests/responses and credential-based JWT authentication. No browser required.
 
 ## Setup
 
@@ -14,25 +16,47 @@ pip install -r requirements.txt
 
 ## Authentication
 
-The API uses short-lived JWT Bearer tokens (5 min expiry). Authentication is handled automatically via Chrome DevTools Protocol — no manual token copying required.
+The API uses short-lived JWT Bearer tokens (~5 min expiry). The client logs in with
+email/password (`POST /api/users/login`), caches the returned access + refresh
+tokens, auto-refreshes when the JWT nears expiry, and re-logs-in on a 401 — all
+automatically.
 
-**Prerequisite:** Chrome must be running with `--remote-debugging-port=9222` (already configured) and `https://energipays.com` must be open in a tab while logged in.
+Provide credentials via env vars (preferred) or constructor args:
+
+```bash
+export ENERGIPAYS_EMAIL="you@example.com"
+export ENERGIPAYS_PASSWORD="..."
+```
 
 ```python
 from energipays import EnergipaysClient
-client = EnergipaysClient.from_chrome()   # pulls fresh token from Chrome automatically
+
+client = EnergipaysClient()                       # uses ENERGIPAYS_EMAIL/PASSWORD
+# or
+client = EnergipaysClient(email="...", password="...")
+
+print(client.me())
+print(client.devices())
 ```
+
+Tokens are cached in `.token_cache.json`, so subsequent runs refresh instead of
+re-sending the password. Pass `auto_login=False` to defer the network call.
 
 ## Key Files
 
 - `energipays.py` — main client library (`EnergipaysClient` class)
-- `cdp_tokens.py` — Chrome DevTools Protocol token extractor
-- `token_server.py` — fallback local HTTP server for token capture (Safari alternative)
+- `cli.py` — command-line client (argparse, subcommands, credential flags)
+- `extract_key.py` — dynamic AES key extractor from the deployed JS bundle
 
 ## Encryption
 
 - AES-256-CBC via CryptoJS wire format: `base64(JSON({value, iv, mac}))`
-- Key hardcoded in JS bundle (`main.*.chunk.js`), loaded via `ENERGIPAYS_KEY` env var
+- The key lives in the client-side JS bundle (`main.*.chunk.js`) and rotates on each
+  deploy, so it is resolved at runtime — never hardcoded. Resolution order:
+  `ENERGIPAYS_KEY` env var → `.key_cache.json` → dynamic extraction
+  (`extract_key.find_key`), validated by round-trip decrypting a live response.
+- `EnergipaysClient` resolves the key lazily via `_ensure_key()`, so any call works
+  once authenticated. To inspect candidates manually: `python extract_key.py`.
 - Data server endpoints (`data-au-1.energipays.com`) are **not** encrypted
 
 ## API Structure
@@ -52,13 +76,21 @@ client = EnergipaysClient.from_chrome()   # pulls fresh token from Chrome automa
 ## Conventions
 
 - Python >= 3.11, type hints on public functions
-- `requests` for HTTP, `pycryptodome` for AES, `pychrome` for CDP
-- Never commit `.token_cache.json` — contains live auth tokens
-- Never commit the AES key directly — use `ENERGIPAYS_KEY` env var
+- `requests` for HTTP, `pycryptodome` for AES
+- Never commit `.token_cache.json` or `.key_cache.json` — contain live secrets
+- Never hardcode the AES key — use `ENERGIPAYS_KEY` env var or dynamic extraction
 
 ## Commands
 
 ```bash
-python cdp_tokens.py          # verify Chrome token extraction works
-python energipays.py          # run full API probe (requires Chrome open + logged in)
+python extract_key.py    # discover the AES key candidate(s) in the live JS bundle
+python energipays.py     # standalone API probe (uses ENERGIPAYS_EMAIL/PASSWORD or prompts)
+
+# CLI client (credential flags fall back to env vars, then prompt):
+python cli.py --help
+python cli.py -e you@example.com -p secret me
+python cli.py devices                     # uses ENERGIPAYS_EMAIL/PASSWORD
+python cli.py -e you@example.com --password-stdin me   # password via stdin (safer)
+python cli.py stats <device_id> --from 2026-06-01 --to 2026-06-24
+python cli.py boost <device_id> --period 30 --yes
 ```

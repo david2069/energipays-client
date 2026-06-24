@@ -1,7 +1,10 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 .token_cache.json
+.key_cache.json
+*.har
 .env
 *.egg-info/
 dist/

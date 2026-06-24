@@ -1,3 +1,2 @@
 requests>=2.31.0
 pycryptodome>=3.19.0
-pychrome>=0.2.4
