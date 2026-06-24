@@ -349,6 +349,30 @@ class EnergipaysClient:
     def client_defaults(self) -> dict:
         return self._get("/api/client/defaults")
 
+    def set_device_status(self, device_id: str, **fields) -> dict:
+        """POST /api/devices/{id}/status — toggle individual device switches.
+
+        Confirmed fields (from HAR 2026-06-24):
+          status=1/0                     — PowerDiverter on/off
+          heaterStatus=1/0               — immersion heater on/off
+          offpeakSwitcherStatus=1/0      — off-peak tariff mode on/off
+          (and other switchers from the full status_data object)
+
+        All encrypted, main API (energipays.com).
+        """
+        return self._post(f"/api/devices/{device_id}/status", fields)
+
+    def update_device(self, device_id: str, status_data: dict,
+                      rule_id: str = "0") -> dict:
+        """PUT /api/devices/{id} — full device state sync (encrypted).
+
+        Used when changing the active automation rule. ``status_data`` should be
+        the complete set of switcher fields (see HANDOVER.md for the full list).
+        ``rule_id`` is the UUID of the active rule, or ``"0"`` for no rule.
+        """
+        return self._put(f"/api/devices/{device_id}",
+                         {"status_data": status_data, "rule_id": rule_id, "type": "command"})
+
     # ── Rules ─────────────────────────────────────────────────────────────────
 
     def rules(self) -> dict:
@@ -458,6 +482,24 @@ class EnergipaysClient:
         if r.status_code == 401 and self._can_reauth():   # reactive fallback
             self._ensure_token()
             r = self.session.get(self.base_url + path, params=params)
+        return self._handle(r)
+
+    def _put(self, path: str, body: dict) -> dict:
+        if self._token_expired():
+            self._ensure_token()
+        self._ensure_key()
+        payload = encrypt(json.dumps(body))
+        data = urllib.parse.urlencode({"payload": payload})
+        r = self.session.put(
+            self.base_url + path, data=data,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if r.status_code == 401 and self._can_reauth():
+            self._ensure_token()
+            r = self.session.put(
+                self.base_url + path, data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
         return self._handle(r)
 
     def _post(self, path: str, body: dict, auth: bool = True) -> dict:

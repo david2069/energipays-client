@@ -98,6 +98,30 @@ def cmd_boost(c, a):
     dev_id, server = (a.device_id, a.server) if a.device_id else _first_device(c)
     return c.boost_device(dev_id, a.server or server, period=a.period)
 
+def cmd_device_on(c, a):
+    if not a.yes:
+        sys.exit("Refusing to send a device command without --yes.")
+    dev_id = a.device_id or _first_device(c)[0]
+    return c.set_device_status(dev_id, status=1)
+
+def cmd_device_off(c, a):
+    if not a.yes:
+        sys.exit("Refusing to send a device command without --yes.")
+    dev_id = a.device_id or _first_device(c)[0]
+    return c.set_device_status(dev_id, status=0)
+
+def cmd_heater_on(c, a):
+    if not a.yes:
+        sys.exit("Refusing to send a device command without --yes.")
+    dev_id = a.device_id or _first_device(c)[0]
+    return c.set_device_status(dev_id, heaterStatus=1)
+
+def cmd_heater_off(c, a):
+    if not a.yes:
+        sys.exit("Refusing to send a device command without --yes.")
+    dev_id = a.device_id or _first_device(c)[0]
+    return c.set_device_status(dev_id, heaterStatus=0)
+
 
 def cmd_key(c, a):
     """Resolve and print the AES key (triggers extraction if needed)."""
@@ -162,6 +186,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="boost duration: 1=1h, 2=2h, 3=3h (default: 1h)")
     sp.add_argument("--server", help="override the device data server URL")
     sp.add_argument("--yes", action="store_true", help="confirm sending the device command")
+
+    for name, handler, help_text in [
+        ("device-on",   cmd_device_on,  "enable the PowerDiverter (defaults to first device)"),
+        ("device-off",  cmd_device_off, "disable the PowerDiverter (defaults to first device)"),
+        ("heater-on",   cmd_heater_on,  "turn the immersion heater on (defaults to first device)"),
+        ("heater-off",  cmd_heater_off, "turn the immersion heater off (defaults to first device)"),
+    ]:
+        sp = add(name, handler, help_text)
+        sp.add_argument("device_id", nargs="?", default=None)
+        sp.add_argument("--yes", action="store_true", help="confirm sending the device command")
 
     return p
 

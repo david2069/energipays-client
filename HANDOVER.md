@@ -80,6 +80,35 @@ Access token lifetime is **300s**. `refresh_token` is an opaque (non-JWT) string
 - Data-server endpoints (`data-au-1.energipays.com`) are **plaintext**,
   form-urlencoded, Bearer-authed.
 
+## Write endpoints — confirmed (HAR 2026-06-24)
+
+All POST/PUT to main API (energipays.com), AES-256-CBC encrypted form `payload=`.
+
+| Action | Method | Path | Body |
+|--------|--------|------|------|
+| PowerDiverter on | POST | `/api/devices/{id}/status` | `{"status": 1}` |
+| PowerDiverter off | POST | `/api/devices/{id}/status` | `{"status": 0}` |
+| Heater on | POST | `/api/devices/{id}/status` | `{"heaterStatus": 1}` |
+| Heater off | POST | `/api/devices/{id}/status` | `{"heaterStatus": 0}` |
+| Off-peak switcher | POST | `/api/devices/{id}/status` | `{"offpeakSwitcherStatus": 1/0}` |
+| Full state sync | PUT | `/api/devices/{id}` | `{"status_data": {...}, "rule_id": "<uuid>\|\"0\"", "type": "command"}` |
+
+**Full `status_data` fields** (PUT body, from HAR):
+```json
+{
+  "admin": 1, "customer": 1, "retailer": 1, "evStatus": 0,
+  "heaterStatus": 1, "heaterPumpStatus": 0, "heater2SwitcherStatus": 1,
+  "offpeakSwitcherStatus": 0, "weatherSwitcherStatus": 0,
+  "priorityModeSwitcherStatus": 1, "smartWeatherSwitcherStatus": 0,
+  "solarRestrictionSwitcherStatus": 1, "offpeakTemperatureSwitcherStatus": 1
+}
+```
+The full PUT is sent when changing the active rule (`rule_id` = UUID or `"0"` for none).
+
+Rule CRUD (create/edit/delete) endpoints are **unconfirmed** — capture a HAR while editing a rule.
+
+---
+
 ## Endpoint map (from HAR, all 200 unless noted)
 
 Main API (`energipays.com`, encrypted, Bearer):
