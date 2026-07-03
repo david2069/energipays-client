@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "energipays-client"
+version = "0.1.0"
+description = "Python client for the Energipays cloud API"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+    "pycryptodome>=3.19",
+]
+
+[tool.setuptools]
+py-modules = ["energipays", "cli", "extract_key", "find_login", "diag_login"]
