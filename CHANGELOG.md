@@ -5,6 +5,26 @@ Format: `[YYYY-MM-DD] — description`.
 
 ---
 
+## [2026-07-03] — v0.2.0 — Observable, non-circular AES key resolution
+
+### Fixed
+- **Fast-path key extraction failures are now visible** — the exception (or the
+  candidate-count mismatch) is logged at WARNING with the error type instead of
+  being swallowed at DEBUG level. This hid the real failure behind the generic
+  "AES key not set" for six bridge releases.
+- **Circular-dependency trap removed** — when the fast path fails and no valid
+  Bearer token exists, `_ensure_key()` now raises an actionable error naming the
+  underlying cause and the manual overrides, instead of recursing into
+  `login()` and dying with "AES key not set".
+- **Fast path now collects candidates across all chunks** and requires exactly
+  one unique `Base64.parse` match (was: first chunk with exactly one match).
+- `_fetch_encrypted_payload()` has a 20s timeout (previously could hang forever).
+
+### Changed
+- `pyproject.toml` version 0.1.0 → 0.2.0.
+
+---
+
 ## [2026-06-26] — Human-friendly `devices`, `device`, `status` + boost sync with bridge CLI
 
 ### Added

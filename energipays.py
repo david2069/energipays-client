@@ -296,10 +296,10 @@ class EnergipaysClient:
         Used to validate AES key candidates — needs a valid token but NOT the key.
         Bypasses _ensure_key()/_handle() to avoid recursion.
         """
-        r = self.session.get(self.base_url + path)
+        r = self.session.get(self.base_url + path, timeout=20)
         if r.status_code == 401 and self._can_reauth():
             self._ensure_token()
-            r = self.session.get(self.base_url + path)
+            r = self.session.get(self.base_url + path, timeout=20)
         r.raise_for_status()
         payload = r.json().get("payload")
         if not payload:
@@ -325,20 +325,29 @@ class EnergipaysClient:
             from extract_key import context_candidates_from_js, discover_chunk_urls, find_key
 
             # Fast path: scan JS bundle for Base64.parse("...") candidates without
-            # needing a live token. If exactly one high-signal candidate is found,
-            # use it directly — avoids a chicken-and-egg dependency on login.
+            # needing a live token. If exactly one high-signal candidate is found
+            # across all chunks, use it directly — avoids a chicken-and-egg
+            # dependency on login.
             fast_key: str | None = None
+            fast_err = ""
             try:
-                for url in discover_chunk_urls(self.base_url, self.session):
-                    import requests as _req
+                chunk_urls = discover_chunk_urls(self.base_url, self.session)
+                candidates: list[str] = []
+                for url in chunk_urls:
                     r = self.session.get(url, timeout=20)
                     if r.ok:
-                        ctx = context_candidates_from_js(r.text)
-                        if len(ctx) == 1:
-                            fast_key = ctx[0]
-                            break
+                        for c in context_candidates_from_js(r.text):
+                            if c not in candidates:
+                                candidates.append(c)
+                if len(candidates) == 1:
+                    fast_key = candidates[0]
+                elif not chunk_urls:
+                    fast_err = "no JS chunk URLs discovered at " + self.base_url
+                else:
+                    fast_err = (f"{len(candidates)} Base64.parse candidates across "
+                                f"{len(chunk_urls)} chunks (need exactly 1)")
             except Exception as _fe:
-                log.debug("crypto: fast-path extraction skipped — %s", _fe)
+                fast_err = f"{type(_fe).__name__}: {_fe}"
 
             if fast_key:
                 log.info("crypto: AES key extracted from JS bundle (single Base64.parse candidate) — no validator needed")
@@ -350,7 +359,21 @@ class EnergipaysClient:
                     pass
                 set_key(fast_key)
             else:
-                # Validated path: needs a live token to decrypt a sample response
+                log.warning("crypto: fast-path key extraction failed — %s", fast_err)
+                # Validated path: needs a live Bearer token to fetch an encrypted
+                # sample response. Without one it MUST NOT proceed: the sample
+                # fetch would 401 -> _ensure_token() -> login() -> _ensure_key()
+                # (blocked by the re-entry guard) -> encrypt() dies with the
+                # generic "AES key not set". Fail loud and actionable instead.
+                if not self._token or self._token_expired():
+                    raise RuntimeError(
+                        "Could not auto-extract the AES key from the "
+                        f"{self.base_url} JS bundle ({fast_err}), and no valid "
+                        "login token exists to validate key candidates against. "
+                        "Set the key manually via the ENERGIPAYS_KEY env var, "
+                        "the add-on Configuration -> AES Key field, or the setup "
+                        "wizard's key diagnostics."
+                    )
                 log.debug("crypto: fetching encrypted sample payload from %s for key validation", sample_path)
                 sample = self._fetch_encrypted_payload(sample_path)
                 log.debug("crypto: sample payload acquired (%d chars) — scanning JS bundle for key candidates", len(sample))
