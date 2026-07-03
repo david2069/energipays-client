@@ -80,18 +80,23 @@ Access token lifetime is **300s**. `refresh_token` is an opaque (non-JWT) string
 - Data-server endpoints (`data-au-1.energipays.com`) are **plaintext**,
   form-urlencoded, Bearer-authed.
 
-## Write endpoints — confirmed (HAR 2026-06-24)
+## Write endpoints — confirmed (HAR 2026-06-24, extended 2026-06-26)
 
 All POST/PUT to main API (energipays.com), AES-256-CBC encrypted form `payload=`.
+Data-server endpoints are plaintext form-urlencoded.
 
-| Action | Method | Path | Body |
-|--------|--------|------|------|
-| PowerDiverter on | POST | `/api/devices/{id}/status` | `{"status": 1}` |
-| PowerDiverter off | POST | `/api/devices/{id}/status` | `{"status": 0}` |
-| Heater on | POST | `/api/devices/{id}/status` | `{"heaterStatus": 1}` |
-| Heater off | POST | `/api/devices/{id}/status` | `{"heaterStatus": 0}` |
-| Off-peak switcher | POST | `/api/devices/{id}/status` | `{"offpeakSwitcherStatus": 1/0}` |
-| Full state sync | PUT | `/api/devices/{id}` | `{"status_data": {...}, "rule_id": "<uuid>\|\"0\"", "type": "command"}` |
+| Action | Method | Path | Body | Server |
+|--------|--------|------|------|--------|
+| PowerDiverter on/off | POST | `/api/devices/{id}/status` | `{"status": 1\|0}` | main |
+| Heater on/off | POST | `/api/devices/{id}/status` | `{"heaterStatus": 1\|0}` | main |
+| Off-peak switcher | POST | `/api/devices/{id}/status` | `{"offpeakSwitcherStatus": 1\|0}` | main |
+| Weather switcher | POST | `/api/devices/{id}/status` | `{"weatherSwitcherStatus": 1\|0}` | main |
+| Solar restriction | POST | `/api/devices/{id}/status` | `{"solarRestrictionSwitcherStatus": 1\|0}` | main |
+| Priority mode | POST | `/api/devices/{id}/status` | `{"priorityModeSwitcherStatus": 1\|0}` | main |
+| Boost power | POST | `/api/devices/{id}/boostPower` | `{"boost_power": 1\|2\|3\|4}` | main |
+| Boost start | POST | `/api/client/device/{id}/boost` | `period=1\|2\|3` (form) | data |
+| Boost cancel | POST | `/api/client/device/{id}/boost` | `period=1` (form) | data |
+| Full state sync | PUT | `/api/devices/{id}` | `{"status_data": {...}, "rule_id": "<uuid>\|\"0\"", "type": "command"}` | main |
 
 **Full `status_data` fields** (PUT body, from HAR):
 ```json
@@ -142,18 +147,22 @@ Other hosts (not yet wrapped, probably out of scope):
 - `message-1.energipays.com` — `/api/ping`, `/api/contacts`
 - `price-data-1.energipays.com` — `/PD_PriceAPI/get_last_price_and_demand`
 
-## Boost — needs attention
+## Boost — CONFIRMED (2026-06-26)
 
-The HAR shows two boost calls: `period=2` then `period=1`. The user described it
-as "boost 1 hour, then turn off a minute later". So **`period` is NOT minutes** —
-the current code default `period=60` is almost certainly wrong. `period` looks like
-a small enum/index (observed 1 and 2). There is **no separate cancel/off call** in
-the HAR, so "turning off" appears to be another `/boost` POST with a different
-`period` value (possibly `period=1` = minimum/off, or an index into preset
-durations). **TODO: confirm the `period` semantics** — decode the SPA's boost
-dialog in the bundle, or capture a HAR while selecting known durations. Until then,
-`cli.py boost` requires `--yes` and the `--period` default should be treated as
-unverified.
+Period is an enum index, **not minutes**:
+
+| period | duration |
+|--------|----------|
+| 1 | 30 min |
+| 2 | 1 hour |
+| 3 | 2 hours |
+
+**Cancel**: there is no separate cancel endpoint. `cancel_boost()` sends
+`POST /boost` with `period=1` — confirmed from the energipays.com SPA source.
+
+**Boost power**: separate endpoint `POST /api/devices/{id}/boostPower` with
+`{"boost_power": idx}` where idx 1=25%, 2=50%, 3=75%, 4=100%.
+Client method: `set_boost_power(device_id, power_idx)`.
 
 ## Device object + scheduling (from live `GET /api/client/device/{id}`)
 
@@ -211,20 +220,14 @@ building features:
 | Thermino | PD rule name | `device_statuses.customer_rule` name field (e.g. "Daily boost & disable") |
 | Thermino | Off-Peak rule name | separate rule object — "Empty" when none configured |
 
-## Immediate next steps (in order)
-1. **Verify login end-to-end:**
-   ```bash
-   rm -f .token_cache.json
-   python cli.py -e david.hona@gmail.com -p 'REAL_PW' me
-   ```
-   Expect the user profile JSON. If it fails, run `python diag_login.py` and read
-   the decrypted response.
-2. Smoke-test the read endpoints: `devices`, `rules`, `me`, `statistics`, `stats`.
-3. Confirm `period` semantics before trusting `boost`.
-4. Verify/repair `/api/auth/refresh` (or decide to rely on re-login only).
-5. `.gitignore login.har` — it contains live tokens. Consider scrubbing it.
-6. Security: the AES key is in git history (commit `9a351dc`) and is public-by-design
-   (client-side JS), so not a real secret — but note it.
+## Remaining open questions
+
+1. **`/api/auth/refresh`** — still unverified. Falls back to re-login, so not blocking.
+2. **Rule CRUD endpoints** — create/edit/delete are now used by `energipays-bridge` via
+   the same `EnergipaysClient.create_rule/update_rule/delete_rule` methods; working in
+   production but the exact request shapes haven't been captured in a HAR.
+3. **Cancel weather boost** — `cancel_weather_boost()` wraps
+   `POST /api/client/device/{id}/weather/boost/cancel`; not yet tested live.
 
 ## Gotchas learned the hard way
 - A stale Bearer header on an unauthenticated request → 401 "Unauthenticated"

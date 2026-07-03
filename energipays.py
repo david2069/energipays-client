@@ -22,6 +22,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import os
 import pathlib
 import secrets
@@ -30,6 +31,8 @@ import urllib.parse
 import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
+
+log = logging.getLogger(__name__)
 
 BASE_URL = "https://energipays.com"
 
@@ -43,7 +46,12 @@ CMD_BOOST = "2"   # boost (uses boost_power / temperature_min)
 #   3. dynamic extraction from the deployed JS bundle (extract_key.find_key),
 #      validated by round-trip decrypting a live response.
 # The key is NOT hardcoded — it lives in client-side JS and rotates on each deploy.
-_KEY_CACHE = pathlib.Path(__file__).parent / ".key_cache.json"
+# Cache location: DATA_DIR env var (data volume in Docker) > script parent dir.
+_KEY_CACHE = (
+    pathlib.Path(os.environ["DATA_DIR"]) / ".key_cache.json"
+    if os.environ.get("DATA_DIR")
+    else pathlib.Path(__file__).parent / ".key_cache.json"
+)
 
 
 def _load_key_cache() -> str:
@@ -58,11 +66,16 @@ def _load_key_cache() -> str:
 _KEY_B64 = os.environ.get("ENERGIPAYS_KEY", "") or _load_key_cache()
 _KEY = base64.b64decode(_KEY_B64) if _KEY_B64 else b""
 
+if _KEY_B64:
+    _src = "ENERGIPAYS_KEY env var" if os.environ.get("ENERGIPAYS_KEY") else ".key_cache.json"
+    log.debug("crypto: AES wire key loaded at import from %s (%d bytes)", _src, len(_KEY))
+
 
 def set_key(b64_key: str) -> None:
     """Set the AES key at runtime (alternative to ENERGIPAYS_KEY env var)."""
     global _KEY
     _KEY = base64.b64decode(b64_key)
+    log.info("crypto: AES-256-CBC wire key set (%d bytes)", len(_KEY))
 
 
 # ── Credentials & token cache ───────────────────────────────────────────────────
@@ -178,6 +191,7 @@ class EnergipaysClient:
                 "access_token": access,
                 "refresh_token": self._refresh_token or "",
             }))
+            log.debug("auth: tokens cached to %s", _TOKEN_CACHE)
         except Exception:
             pass
 
@@ -188,6 +202,7 @@ class EnergipaysClient:
         "Unauthenticated" unless the request carries the session cookie and a
         matching X-XSRF-TOKEN header. We fetch these programmatically (no browser).
         """
+        log.debug("auth: fetching Laravel Sanctum CSRF cookie")
         for path in ("/sanctum/csrf-cookie", "/"):
             try:
                 self.session.get(self.base_url + path, timeout=15)
@@ -197,7 +212,9 @@ class EnergipaysClient:
             if xsrf:
                 # Browser sends the URL-decoded cookie value as the header.
                 self.session.headers["X-XSRF-TOKEN"] = urllib.parse.unquote(xsrf)
+                log.debug("auth: CSRF token acquired via %s — X-XSRF-TOKEN set", path)
                 return
+        log.warning("auth: could not obtain CSRF token — login may be rejected")
 
     def login(self, email: str | None = None, password: str | None = None) -> dict:
         """POST /api/auth/login — Sanctum/CSRF credential login; stores + caches tokens.
@@ -213,9 +230,12 @@ class EnergipaysClient:
                 "No credentials — set ENERGIPAYS_EMAIL / ENERGIPAYS_PASSWORD "
                 "or pass email=/password= to EnergipaysClient()."
             )
+        log.info("auth: login sequence start for %s", email)
         self._ensure_key()
+        log.debug("auth: AES wire key ready — encrypting credentials for POST")
         self._ensure_csrf()
         payload = encrypt(json.dumps({"username": email, "password": password}))
+        log.debug("auth: sending AES-256-CBC encrypted login POST to %s/api/auth/login", self.base_url)
         r = self.session.post(
             self.base_url + "/api/auth/login",
             data=urllib.parse.urlencode({"payload": payload}),
@@ -224,7 +244,12 @@ class EnergipaysClient:
         resp = self._handle(r)
         token = resp.get("access_token") or resp.get("token") or resp.get("accessToken")
         if token:
+            exp = _jwt_exp(token)
+            exp_info = f"expires at unix {exp}" if exp else "no exp (opaque token)"
+            log.info("auth: Bearer token received (%s)", exp_info)
             self._store_tokens(token, resp.get("refresh_token"))
+        else:
+            log.warning("auth: login response contained no token")
         return resp
 
     def refresh(self) -> dict:
@@ -289,27 +314,64 @@ class EnergipaysClient:
         response. The correct key is the only candidate that yields valid PKCS#7
         padding + parseable JSON.
         """
-        if _KEY or self._resolving_key:
+        if _KEY:
+            log.debug("crypto: AES wire key already loaded — skipping extraction")
+            return
+        if self._resolving_key:
             return
         self._resolving_key = True
         try:
-            from extract_key import find_key
+            log.info("crypto: AES wire key not set — starting dynamic extraction from JS bundle")
+            from extract_key import context_candidates_from_js, discover_chunk_urls, find_key
 
-            sample = self._fetch_encrypted_payload(sample_path)
+            # Fast path: scan JS bundle for Base64.parse("...") candidates without
+            # needing a live token. If exactly one high-signal candidate is found,
+            # use it directly — avoids a chicken-and-egg dependency on login.
+            fast_key: str | None = None
+            try:
+                for url in discover_chunk_urls(self.base_url, self.session):
+                    import requests as _req
+                    r = self.session.get(url, timeout=20)
+                    if r.ok:
+                        ctx = context_candidates_from_js(r.text)
+                        if len(ctx) == 1:
+                            fast_key = ctx[0]
+                            break
+            except Exception as _fe:
+                log.debug("crypto: fast-path extraction skipped — %s", _fe)
 
-            def validator(key_bytes: bytes) -> bool:
+            if fast_key:
+                log.info("crypto: AES key extracted from JS bundle (single Base64.parse candidate) — no validator needed")
+                # Save to cache so subsequent restarts skip extraction entirely
                 try:
-                    outer = json.loads(base64.b64decode(sample))
-                    ct = base64.b64decode(outer["value"])
-                    iv = base64.b64decode(outer["iv"])
-                    pt = unpad(AES.new(key_bytes, AES.MODE_CBC, iv).decrypt(ct), AES.block_size)
-                    json.loads(pt.decode("utf-8"))
-                    return True
+                    import json as _j
+                    _KEY_CACHE.write_text(_j.dumps({"key": fast_key}))
                 except Exception:
-                    return False
+                    pass
+                set_key(fast_key)
+            else:
+                # Validated path: needs a live token to decrypt a sample response
+                log.debug("crypto: fetching encrypted sample payload from %s for key validation", sample_path)
+                sample = self._fetch_encrypted_payload(sample_path)
+                log.debug("crypto: sample payload acquired (%d chars) — scanning JS bundle for key candidates", len(sample))
 
-            key_b64 = find_key(self.base_url, validator=validator, session=self.session)
-            set_key(key_b64)
+                def validator(key_bytes: bytes) -> bool:
+                    try:
+                        outer = json.loads(base64.b64decode(sample))
+                        ct = base64.b64decode(outer["value"])
+                        iv = base64.b64decode(outer["iv"])
+                        pt = unpad(AES.new(key_bytes, AES.MODE_CBC, iv).decrypt(ct), AES.block_size)
+                        json.loads(pt.decode("utf-8"))
+                        return True
+                    except Exception:
+                        return False
+
+                key_b64 = find_key(self.base_url, validator=validator, session=self.session)
+                log.info("crypto: AES key extracted and validated — decryption round-trip confirmed OK")
+                set_key(key_b64)
+        except Exception as exc:
+            log.error("crypto: key extraction failed — %s", exc)
+            raise
         finally:
             self._resolving_key = False
 
@@ -362,6 +424,16 @@ class EnergipaysClient:
         """
         return self._post(f"/api/devices/{device_id}/status", fields)
 
+    def set_rule(self, device_id: str, rule_id: str, rule_type: str = "command") -> dict:
+        """PUT /api/devices/{id} — quick-set (or clear) the active rule for a circuit.
+
+        ``rule_id`` is the rule UUID to activate, or ``"0"`` to clear.
+        ``rule_type``: ``"command"`` (PD), ``"offpeak"`` (Off-Peak), ``"heater2"`` (Heater 2).
+        This is the lightweight form — no status_data required.
+        """
+        return self._put(f"/api/devices/{device_id}",
+                         {"rule_id": rule_id, "type": rule_type})
+
     def update_device(self, device_id: str, status_data: dict,
                       rule_id: str = "0") -> dict:
         """PUT /api/devices/{id} — full device state sync (encrypted).
@@ -378,6 +450,31 @@ class EnergipaysClient:
     def rules(self) -> dict:
         """GET /api/rules — list automation rules."""
         return self._get("/api/rules")
+
+    def create_rule(self, name: str, rule_type: str = "command") -> dict:
+        """POST /api/rules — create a new automation rule (encrypted)."""
+        log.info("rules: creating rule '%s' (type=%s)", name, rule_type)
+        return self._post("/api/rules", {"name": name, "type": rule_type, "data": {}})
+
+    def update_rule(self, rule_id: str, rule_data: dict) -> dict:
+        """PUT /api/rules/{id} — update an automation rule (encrypted).
+
+        The server only applies changes when the body is exactly {"data": {dN: [slots]}}.
+        Sending the full rule object causes the server to silently ignore the data field.
+        """
+        log.info("rules: updating rule %s (%s)", rule_id, rule_data.get("name", ""))
+        body: dict = {"data": rule_data.get("data", {})}
+        return self._put(f"/api/rules/{rule_id}", body)
+
+    def rename_rule(self, rule_id: str, name: str) -> dict:
+        """PUT /api/rules/{id} — rename a rule (sends only {"name": ...})."""
+        log.info("rules: renaming rule %s to %s", rule_id, name)
+        return self._put(f"/api/rules/{rule_id}", {"name": name})
+
+    def delete_rule(self, rule_id: str) -> dict:
+        """DELETE /api/rules/{id} — remove an automation rule (encrypted)."""
+        log.info("rules: deleting rule %s", rule_id)
+        return self._delete(f"/api/rules/{rule_id}")
 
     # ── Analytics / Logs ──────────────────────────────────────────────────────
 
@@ -445,6 +542,14 @@ class EnergipaysClient:
         )
         return self._handle_raw(r)
 
+    def set_boost_power(self, device_id: str, power: int) -> dict:
+        """POST /api/devices/{id}/boostPower — set boost power level (encrypted, main API).
+
+        ``power``: 1=25%, 2=50%, 3=75%, 4=100% (matches the app UI presets).
+        Confirmed endpoint from HAR 2026-06-26.
+        """
+        return self._post(f"/api/devices/{device_id}/boostPower", {"boost_power": power})
+
     def boost_device(self, device_id: str, data_server: str | None = None,
                      period: int = 1) -> dict:
         """POST data-server/api/client/device/{id}/boost — trigger a timed boost.
@@ -456,6 +561,20 @@ class EnergipaysClient:
         r = self.session.post(
             f"{base}/api/client/device/{device_id}/boost",
             data=urllib.parse.urlencode({"period": period}),
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        return self._handle_raw(r)
+
+    def cancel_boost(self, device_id: str, data_server: str | None = None) -> dict:
+        """Cancel a manual boost.
+
+        HAR-confirmed (2026-06-26): energipays.com sends POST /boost with period=1
+        to cancel — there is no separate cancel endpoint.
+        """
+        base = (data_server or self._data_server).rstrip("/")
+        r = self.session.post(
+            f"{base}/api/client/device/{device_id}/boost",
+            data=urllib.parse.urlencode({"period": 1}),
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
         return self._handle_raw(r)
@@ -500,6 +619,15 @@ class EnergipaysClient:
                 self.base_url + path, data=data,
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
+        return self._handle(r)
+
+    def _delete(self, path: str) -> dict:
+        if self._token_expired():
+            self._ensure_token()
+        r = self.session.delete(self.base_url + path)
+        if r.status_code == 401 and self._can_reauth():
+            self._ensure_token()
+            r = self.session.delete(self.base_url + path)
         return self._handle(r)
 
     def _post(self, path: str, body: dict, auth: bool = True) -> dict:
