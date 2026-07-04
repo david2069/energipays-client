@@ -1,8 +1,15 @@
 # energipays-client
 
-Standalone Python client library and CLI for the [Energipays](https://energipays.com)
-API. Handles AES-256-CBC encrypted requests, credential-based JWT authentication, and
+An unofficial locally self-hosted standalone Python client library and CLI for the [Energipays](https://energipays.com) PowerDiverter - a Solar PV panel power diverter for hot water devices.
+
+The API handles AES-256-CBC encrypted requests, credential-based JWT authentication, and
 device control — no browser required.
+
+NOTE: This software package is NOT affilated with Energipays and is provided "as is" with NO warranty, NO support nor is acknowledged or endorsed nor is it any way approved for use by the vendor. Any use is at your own risk and without any support by the author(s) nor Engeripays.
+
+This software was developed by reverse engineering the web portal and as such my cease to work at any time. This may be due to changes imposed by Energipays and/or should the Cloud service no longer be available in it's current form.
+
+
 
 ---
 
