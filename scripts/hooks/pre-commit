@@ -1,0 +1,10 @@
+#!/bin/sh
+# Blocks a commit if scripts/check_pii.py finds personal data in the files about to be
+# committed. Catching it here keeps it out of history; a pre-push catch is already a commit.
+# Enable once per clone:  git config core.hooksPath scripts/hooks
+repo_root=$(git rev-parse --show-toplevel) || exit 1
+python3 "$repo_root/scripts/check_pii.py" --scan || {
+    echo ""
+    echo "Commit blocked by the PII scanner. Fix the findings above, then commit again."
+    exit 1
+}

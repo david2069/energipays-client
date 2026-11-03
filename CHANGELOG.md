@@ -5,6 +5,17 @@ Format: `[YYYY-MM-DD] — description`.
 
 ---
 
+## [Unreleased]
+
+### Changed
+- Licensed under MIT with Additional Terms (`LICENSE`): unofficial, not affiliated with
+  Power Diverter Pty Ltd (Energipays), and the Energipays API or service may change or end
+  at any time.
+
+### Security
+- Docs and examples no longer carry a real device id or part of the AES key; they use the
+  fake id `00000000-0000-4000-8000-000000000001` (#5).
+
 ## [2026-07-03] — v0.2.0 — Observable, non-circular AES key resolution
 
 ### Fixed

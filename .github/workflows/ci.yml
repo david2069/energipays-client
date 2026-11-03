@@ -1,0 +1,33 @@
+name: CI
+
+# PR and manual runs only, to keep within the free Actions budget (same as the DC repos).
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: PII scan
+        env:
+          # The scanner fails in CI if this is empty.
+          PII_TERMS: ${{ secrets.PII_TERMS }}
+        run: python3 scripts/check_pii.py --scan
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Import smoke (offline)
+        run: python -c "import energipays, cli, extract_key; print(\"import OK\")"
+      - name: Tests
+        # No test suite yet; runs once tests/ exists. Never touches the live cloud.
+        run: |
+          if [ -d tests ]; then pip install pytest && pytest -q -m "not live"; else echo "no tests/ yet"; fi
