@@ -147,6 +147,15 @@ def encrypt(data: str) -> str:
     ).decode()
 
 
+def mask_email(email: str | None) -> str:
+    """``user@example.com`` -> ``u•••r@example.com``: for logs, which get shared."""
+    if not email or "@" not in email:
+        return "•••" if email else ""
+    local, _, domain = email.partition("@")
+    shown = local[0] + "•••" + local[-1] if len(local) > 2 else local[:1] + "•••"
+    return f"{shown}@{domain}"
+
+
 def _jwt_exp(token: str) -> int | None:
     """Return the JWT ``exp`` (unix seconds) without verifying the signature."""
     try:
@@ -251,7 +260,7 @@ class EnergipaysClient:
                 "No credentials — set ENERGIPAYS_EMAIL / ENERGIPAYS_PASSWORD "
                 "or pass email=/password= to EnergipaysClient()."
             )
-        log.info("auth: login sequence start for %s", email)
+        log.info("auth: login sequence start for %s", mask_email(email))
         self._ensure_key()
         log.debug("auth: AES wire key ready — encrypting credentials for POST")
         self._ensure_csrf()
