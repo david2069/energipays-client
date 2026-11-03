@@ -5,6 +5,12 @@ Format: `[YYYY-MM-DD] — description`.
 
 ---
 
+## [2026-11-03] — v0.3.1 — No email address in logs
+
+### Security
+- The login log line masks the account email (`u•••r@example.com`); logs are often
+  shared for debugging. `mask_email()` is exported for callers (energipays-bridge#7).
+
 ## [2026-11-03] — v0.3.0 — Rule activation, data-server tokens, boost periods
 
 ### Added
