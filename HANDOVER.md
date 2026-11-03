@@ -17,7 +17,7 @@ real browser session (`login.har`, in repo) gave ground truth and the login path
 was corrected to match the SPA byte-for-byte.
 
 **LOGIN IS VERIFIED WORKING (2026-06-24).** A live run authenticated and returned
-a real `GET /api/client/device/{id}` payload — full chain confirmed: CSRF bootstrap
+a real device payload (`client_device()`, `GET /api/client/device` on the main host) — full chain confirmed: CSRF bootstrap
 → `username`/password login → Passport Bearer → encrypted call decrypted. Read
 endpoints are good. Remaining work is boost semantics + refresh (below).
 
@@ -25,8 +25,8 @@ endpoints are good. Remaining work is boost semantics + refresh (below).
 
 | File | Purpose | State |
 |------|---------|-------|
-| `energipays.py` | Client library (`EnergipaysClient`) | Login rewritten to match HAR; needs live verification |
-| `cli.py` | argparse CLI, subcommands, credential flags | Works (offline-tested); blocked only on login |
+| `energipays.py` | Client library (`EnergipaysClient`) | Login verified live (2026-06-24); rule activation and data-server token handling fixed in 0.3.0 (#2, #3) |
+| `cli.py` | argparse CLI, subcommands, credential flags | Works (offline-tested) |
 | `extract_key.py` | Dynamic AES key extractor from JS bundle | Working; verified |
 | `diag_login.py` | Login-response inspector (prints shape + JWT claims) | Working diagnostic |
 | `find_login.py` | Greps the JS bundle for the auth flow | Working diagnostic |
@@ -94,9 +94,9 @@ Data-server endpoints are plaintext form-urlencoded.
 | Solar restriction | POST | `/api/devices/{id}/status` | `{"solarRestrictionSwitcherStatus": 1\|0}` | main |
 | Priority mode | POST | `/api/devices/{id}/status` | `{"priorityModeSwitcherStatus": 1\|0}` | main |
 | Boost power | POST | `/api/devices/{id}/boostPower` | `{"boost_power": 1\|2\|3\|4}` | main |
-| Boost start | POST | `/api/client/device/{id}/boost` | `period=1\|2\|3` (form) | data |
+| Boost start | POST | `/api/client/device/{id}/boost` | `period=2\|3\|4` (form; 1 h / 2 h / 3 h) | data |
 | Boost cancel | POST | `/api/client/device/{id}/boost` | `period=1` (form) | data |
-| Full state sync | PUT | `/api/devices/{id}` | `{"status_data": {...}, "rule_id": "<uuid>\|\"0\"", "type": "command"}` | main |
+| Rule activation | PUT | `/api/devices/{id}` | `{"status_data": {...current, rule_<circuit>: id}, "rule_id": "<uuid>\|\"0\"", "type": "command\|offpeak\|heater2"}` | main |
 
 **Full `status_data` fields** (PUT body, from HAR):
 ```json
@@ -105,10 +105,16 @@ Data-server endpoints are plaintext form-urlencoded.
   "heaterStatus": 1, "heaterPumpStatus": 0, "heater2SwitcherStatus": 1,
   "offpeakSwitcherStatus": 0, "weatherSwitcherStatus": 0,
   "priorityModeSwitcherStatus": 1, "smartWeatherSwitcherStatus": 0,
-  "solarRestrictionSwitcherStatus": 1, "offpeakTemperatureSwitcherStatus": 1
+  "solarRestrictionSwitcherStatus": 1, "offpeakTemperatureSwitcherStatus": 1,
+  "rule_customer": "<uuid>|0", "rule_offpeak": "<uuid>|0", "rule_heater2": "<uuid>|0"
 }
 ```
-The full PUT is sent when changing the active rule (`rule_id` = UUID or `"0"` for none).
+Rule activation sends the device's **current** `status_data` with only the circuit's
+`rule_customer` (`command`), `rule_offpeak` (`offpeak`) or `rule_heater2` (`heater2`) field
+changed, plus `rule_id` and `type` (energipays.com bundle, `updateDevice` + rule handlers).
+The site sends nothing when the device is in a group (`group_id` not `"0"`/`"empty"`/null).
+The short body `{rule_id, type}` returned **HTTP 500** live (energipays-mobile, 2026-11-03);
+`activate_rule()` never sends it. Never change `admin`/`customer`/`retailer` as a side effect.
 
 Rule CRUD (create/edit/delete) endpoints are **unconfirmed** — capture a HAR while editing a rule.
 
@@ -141,21 +147,30 @@ Data server (`data-au-1.energipays.com`, plaintext form, Bearer):
 - `POST /api/client/device/{id}/statistics`
 - `POST /api/client/device/{id}/stats`
 - `POST /api/client/device/{id}/boost` — **body `period=<int>`** (see below)
-- `GET  /api/client/device/{id}` — single device live state
+- `GET  /api/client/device/{id}` — listed from the bundle; **not wrapped**. `client_device()` calls `GET /api/client/device` on the main host
+
+Data-server calls use the same token handling as the main host: refresh near expiry,
+and on a 401 wait 1 s, refresh and retry once (site: `this.delay(1e3)` then one retry).
+**202 means queued** (site `queueHandler`); the client returns `{"queued": True, ...}`.
 
 Other hosts (not yet wrapped, probably out of scope):
-- `message-1.energipays.com` — `/api/ping`, `/api/contacts`
+- `message-1.energipays.com` — `/api/ping`, `/api/contacts`. Note: `ping()` calls
+  `/api/ping` on the **main** host, not message-1; whether that answers is unverified
 - `price-data-1.energipays.com` — `/PD_PriceAPI/get_last_price_and_demand`
 
 ## Boost — CONFIRMED (2026-06-26)
 
 Period is an enum index, **not minutes**:
 
-| period | duration |
-|--------|----------|
-| 1 | 30 min |
-| 2 | 1 hour |
-| 3 | 2 hours |
+| period | duration | source |
+|--------|----------|--------|
+| 1 | cancel (site) / 30 min | site sends `boostDevice(id, 1, …)` to cancel; a 2026-06-26 HAR read was labelled 30 min |
+| 2 | 1 hour | site button "1 h" |
+| 3 | 2 hours | site button "2 h" |
+| 4 | 3 hours | site button "3 h" (bundle; not yet sent live by this client) |
+
+Conflict recorded: the 2026-06-26 notes call 1 "30 min"; the site never offers 1 as a
+duration and uses it to cancel. `BOOST_PERIODS = {1: 2, 2: 3, 3: 4}` maps hours to period.
 
 **Cancel**: there is no separate cancel endpoint. `cancel_boost()` sends
 `POST /boost` with `period=1` — confirmed from the energipays.com SPA source.

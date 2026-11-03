@@ -5,7 +5,30 @@ Format: `[YYYY-MM-DD] — description`.
 
 ---
 
-## [Unreleased]
+## [2026-11-03] — v0.3.0 — Rule activation, data-server tokens, boost periods
+
+### Added
+- `activate_rule(device_id, rule_id, circuit)` activates or clears a rule the way
+  energipays.com does: it sends the device's current `status_data` with only that
+  circuit's rule field changed, and does nothing for a device in a group (#2).
+- `BOOST_PERIODS`, `RULE_FIELDS` constants; `docs/API.md`, the shared contract for all
+  Energipays clients, and `tests/fixtures/` (#6).
+- A test suite (offline, dummy key).
+
+### Fixed
+- Activating a rule no longer fails with HTTP 500: `set_rule()` now uses
+  `activate_rule()` instead of the short `{rule_id, type}` body (#2).
+- `update_device()` can target the Off-Peak and Heater-2 circuits (`rule_type`) (#2).
+- Status, statistics and boost no longer fail once the 5-minute token expires: data-server
+  calls refresh the token and retry once on a 401, like the main host (#3).
+- A queued command (HTTP 202) is reported as `queued`, not as a plain success (#3).
+- `boost_device()` without a `period` now boosts for 1 hour; it used to send period 1,
+  which energipays.com uses to cancel. Invalid periods are refused (#4).
+- CLI: `boost --period 4` (3 hours) is accepted; `stats`/`statistics` honour the
+  positional device id; a valid cached token no longer forces a password login (#4).
+- Token refresh is serialised with a lock, as the README said (#4).
+- Docs: login path is `/api/auth/login`; boost periods are 2/3/4 = 1/2/3 h; statistics
+  "Last 14 days" is `fortnight` (#4).
 
 ### Changed
 - Licensed under MIT with Additional Terms (`LICENSE`): unofficial, not affiliated with

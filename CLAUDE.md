@@ -20,7 +20,7 @@ pip install -r requirements.txt
 ## Authentication
 
 The API uses short-lived JWT Bearer tokens (~5 min expiry). The client logs in with
-email/password (`POST /api/users/login`), caches the returned access + refresh
+email/password (`POST /api/auth/login`), caches the returned access + refresh
 tokens, auto-refreshes when the JWT nears expiry, and re-logs-in on a 401 — all
 automatically.
 
@@ -94,7 +94,7 @@ python cli.py -e you@example.com -p secret me
 python cli.py devices                     # uses ENERGIPAYS_EMAIL/PASSWORD
 python cli.py -e you@example.com --password-stdin me   # password via stdin (safer)
 python cli.py stats <device_id> --from 2026-06-01 --to 2026-06-24
-python cli.py boost <device_id> --period 2 --yes   # 1=30min, 2=1h, 3=2h
+python cli.py boost <device_id> --period 2 --yes   # 2=1h, 3=2h, 4=3h
 python cli.py cancel --yes                          # cancel running boost
 python cli.py power --percent 75 --yes             # set boost power to 75%
 python cli.py device-on --yes                       # enable PowerDiverter

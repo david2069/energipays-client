@@ -1,7 +1,7 @@
 """
 Energipays API client — standalone, credential-based.
 
-Authentication: email/password login (POST /api/users/login) which returns a
+Authentication: email/password login (POST /api/auth/login) which returns a
 short-lived JWT access token plus a refresh token. The client logs in lazily,
 auto-refreshes when the JWT nears expiry, and re-logs-in on a 401. Provide
 credentials via ENERGIPAYS_EMAIL / ENERGIPAYS_PASSWORD or constructor args.
@@ -26,6 +26,8 @@ import logging
 import os
 import pathlib
 import secrets
+import threading
+import time
 import urllib.parse
 
 import requests
@@ -39,6 +41,22 @@ BASE_URL = "https://energipays.com"
 # Schedule command constants (customer_rule.d1..d7 time-slot command field)
 CMD_IDLE  = "1"   # standby / idle
 CMD_BOOST = "2"   # boost (uses boost_power / temperature_min)
+
+# Boost ``period`` values sent to the data server's /boost endpoint.
+# energipays.com bundle (boostDevice + the boost buttons): 1 h -> 2, 2 h -> 3, 3 h -> 4,
+# and cancel sends period 1 (there is no cancel endpoint). energipays-mobile labels
+# period 1 as 30 min; the site never offers it as a duration.
+BOOST_PERIOD_CANCEL = 1
+BOOST_PERIODS = {1: 2, 2: 3, 3: 4}  # hours -> period
+BOOST_PERIOD_LABELS = {1: "30 min / cancel", 2: "1 hour", 3: "2 hours", 4: "3 hours"}
+
+# Circuit (rule ``type``) -> the status_data field holding that circuit's active rule.
+# energipays.com bundle: updateDevice + the rule handlers.
+RULE_FIELDS = {"command": "rule_customer", "offpeak": "rule_offpeak", "heater2": "rule_heater2"}
+_NO_GROUP = {"", "0", "empty", "null", "none", "unknown"}
+
+# Seconds energipays.com waits before retrying a data-server call that returned 401.
+DATA_RETRY_DELAY = 1.0
 
 # AES-256-CBC key. Resolution order (see EnergipaysClient._ensure_key):
 #   1. ENERGIPAYS_KEY env var
@@ -160,6 +178,9 @@ class EnergipaysClient:
             "Referer": base_url + "/my-devices",
         })
         self._resolving_key = False  # re-entry guard for _ensure_key()
+        # Serialises refresh/login: callers such as the bridge use the client from
+        # several threads, and two concurrent refreshes would race on the token.
+        self._auth_lock = threading.RLock()
         self._token: str | None = None
         self._refresh_token: str | None = None
 
@@ -273,7 +294,6 @@ class EnergipaysClient:
         exp = _jwt_exp(self._token)
         if exp is None:
             return False
-        import time
         return time.time() >= (exp - skew)
 
     def _ensure_token(self) -> None:
@@ -283,10 +303,11 @@ class EnergipaysClient:
         401). Tries the refresh_token grant first; if that is unavailable or leaves
         the token still expired, falls back to a fresh credential login.
         """
-        if self._refresh_token:
-            self.refresh()
-        if self._token_expired() and self._email and self._password:
-            self.login()
+        with self._auth_lock:
+            if self._refresh_token:
+                self.refresh()
+            if self._token_expired() and self._email and self._password:
+                self.login()
 
     # ── Key resolution ──────────────────────────────────────────────────────────
 
@@ -418,12 +439,7 @@ class EnergipaysClient:
         """POST data-server /api/client/device/status — live status (form-encoded, unencrypted)."""
         # This endpoint lives on the data server and uses form-urlencoded, not JSON/encrypted
         body = "&".join(f"ids[{i}]={urllib.parse.quote(d)}" for i, d in enumerate(device_ids))
-        r = self.session.post(
-            f"{self._data_server}/api/client/device/status",
-            data=body,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        return self._handle_raw(r)
+        return self._data_post(f"{self._data_server}/api/client/device/status", body)
 
     def client_device(self) -> dict:
         return self._get("/api/client/device")
@@ -447,26 +463,62 @@ class EnergipaysClient:
         """
         return self._post(f"/api/devices/{device_id}/status", fields)
 
-    def set_rule(self, device_id: str, rule_id: str, rule_type: str = "command") -> dict:
-        """PUT /api/devices/{id} — quick-set (or clear) the active rule for a circuit.
+    def activate_rule(self, device_id: str, rule_id: str, circuit: str = "command") -> dict:
+        """Activate a rule on one circuit, or clear it with ``rule_id="0"``.
 
-        ``rule_id`` is the rule UUID to activate, or ``"0"`` to clear.
-        ``rule_type``: ``"command"`` (PD), ``"offpeak"`` (Off-Peak), ``"heater2"`` (Heater 2).
-        This is the lightweight form — no status_data required.
+        ``circuit``: ``"command"`` (PD), ``"offpeak"`` (Off-Peak), ``"heater2"`` (Heater 2).
+
+        Mirrors energipays.com (bundle: updateDevice + the rule handlers): read the
+        device, take its current ``status_data``, change only the circuit's
+        ``rule_customer`` / ``rule_offpeak`` / ``rule_heater2`` field, and
+        ``PUT /api/devices/{id}`` with ``{status_data, rule_id, type}``. No other
+        status_data field (``admin``, ``customer``, ``retailer``, switches) is changed.
+
+        The short body ``{rule_id, type}`` returned HTTP 500 on the live cloud
+        (energipays-mobile, 2026-11-03; issue #2), so it is never sent.
+
+        Returns the server response, an ``{"error": ...}`` dict, or
+        ``{"skipped": ...}`` when the device is in a group (the site does nothing
+        then: rules are managed by the group).
         """
-        return self._put(f"/api/devices/{device_id}",
-                         {"rule_id": rule_id, "type": rule_type})
+        field = RULE_FIELDS.get(circuit)
+        if field is None:
+            raise ValueError(f"unknown circuit {circuit!r}; expected one of {sorted(RULE_FIELDS)}")
+        prof = self.device(device_id)
+        if isinstance(prof, dict) and ("error" in prof or "error_decrypted" in prof):
+            return prof
+        if isinstance(prof, dict) and isinstance(prof.get("data"), dict):
+            prof = prof["data"]
+        if not isinstance(prof, dict) or not isinstance(prof.get("status_data"), dict):
+            return {"error": "device has no status_data; rule not sent", "status": None}
+        group = str(prof.get("group_id") or "").strip().lower()
+        if group not in _NO_GROUP:
+            return {"skipped": "device is in a group; its rules are managed by the group",
+                    "group_id": prof.get("group_id")}
+        status_data = dict(prof["status_data"])
+        status_data[field] = rule_id
+        log.info("rules: activating rule %s on circuit %s", rule_id, circuit)
+        return self.update_device(device_id, status_data, rule_id, rule_type=circuit)
+
+    def set_rule(self, device_id: str, rule_id: str, rule_type: str = "command") -> dict:
+        """Deprecated alias of :meth:`activate_rule` (kept for existing callers).
+
+        It used to send the short body ``{rule_id, type}``, which the cloud rejects
+        with HTTP 500 (issue #2). It now does what energipays.com does.
+        """
+        return self.activate_rule(device_id, rule_id, rule_type)
 
     def update_device(self, device_id: str, status_data: dict,
-                      rule_id: str = "0") -> dict:
-        """PUT /api/devices/{id} — full device state sync (encrypted).
+                      rule_id: str = "0", rule_type: str = "command") -> dict:
+        """PUT /api/devices/{id} with ``{status_data, rule_id, type}`` (encrypted).
 
-        Used when changing the active automation rule. ``status_data`` should be
-        the complete set of switcher fields (see HANDOVER.md for the full list).
-        ``rule_id`` is the UUID of the active rule, or ``"0"`` for no rule.
+        ``status_data`` must be the device's complete current status_data with only
+        the intended fields changed: the server stores what it is sent. Prefer
+        :meth:`activate_rule`, which builds it. ``rule_type`` is the circuit:
+        ``"command"``, ``"offpeak"`` or ``"heater2"``.
         """
         return self._put(f"/api/devices/{device_id}",
-                         {"status_data": status_data, "rule_id": rule_id, "type": "command"})
+                         {"status_data": status_data, "rule_id": rule_id, "type": rule_type})
 
     # ── Rules ─────────────────────────────────────────────────────────────────
 
@@ -538,32 +590,31 @@ class EnergipaysClient:
 
     def statistics(self, device_id: str, data_server: str | None = None,
                    tz: str = "Australia/Sydney", phase: str = "sum") -> dict:
-        """POST data-server/api/client/device/{id}/statistics — aggregate totals."""
+        """POST data-server/api/client/device/{id}/statistics — aggregate totals.
+
+        Returns ``today``, ``yesterday``, ``week`` and ``fortnight`` buckets; the
+        site's "Last 14 days" is ``fortnight``. ``phase`` is ``sum``, ``a``, ``b``
+        or ``c`` (energipays.com bundle, statistics call).
+        """
         base = (data_server or self._data_server).rstrip("/")
-        r = self.session.post(
-            f"{base}/api/client/device/{device_id}/statistics",
-            data=urllib.parse.urlencode({"tz": tz, "phase": phase}),
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        return self._handle_raw(r)
+        return self._data_post(f"{base}/api/client/device/{device_id}/statistics", urllib.parse.urlencode({"tz": tz, "phase": phase}))
 
     def stats(self, device_id: str, date_from: str, date_to: str,
               data_server: str | None = None, tz: str = "Australia/Sydney",
               data_type: str = "power", phase: str = "sum") -> dict:
         """POST data-server/api/client/device/{id}/stats — per-day chart data.
 
-        ``date_from`` / ``date_to`` format: "YYYY-MM-DD"
+        ``date_from`` / ``date_to`` format: "YYYY-MM-DD".
+        ``data_type``: ``"consumption"`` is what the site's Energy view sends,
+        ``"power"`` its Power view. ``phase``: ``sum``, ``a``, ``b`` or ``c``.
+        Grid sign (site): ``phasePower > 0`` is export; in the power series
+        ``EIP < 0`` is import.
         """
         base = (data_server or self._data_server).rstrip("/")
-        r = self.session.post(
-            f"{base}/api/client/device/{device_id}/stats",
-            data=urllib.parse.urlencode({
+        return self._data_post(f"{base}/api/client/device/{device_id}/stats", urllib.parse.urlencode({
                 "dateFrom": date_from, "dateTo": date_to,
                 "tz": tz, "data_type": data_type, "phase": phase,
-            }),
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        return self._handle_raw(r)
+            }))
 
     def set_boost_power(self, device_id: str, power: int) -> dict:
         """POST /api/devices/{id}/boostPower — set boost power level (encrypted, main API).
@@ -574,19 +625,21 @@ class EnergipaysClient:
         return self._post(f"/api/devices/{device_id}/boostPower", {"boost_power": power})
 
     def boost_device(self, device_id: str, data_server: str | None = None,
-                     period: int = 1) -> dict:
+                     period: int = BOOST_PERIODS[1]) -> dict:
         """POST data-server/api/client/device/{id}/boost — trigger a timed boost.
 
-        ``period``: 1 = 1 hour, 2 = 2 hours, 3 = 3 hours (matches the app UI presets).
-        Power level is controlled by the device's ``boost_power`` setting (set via the app).
+        ``period`` is the raw value energipays.com sends: 2 = 1 hour, 3 = 2 hours,
+        4 = 3 hours (``BOOST_PERIODS`` maps hours to it). 1 is what the site sends to
+        cancel; use :meth:`cancel_boost` for that. Power level is the device's
+        ``boost_power`` setting (:meth:`set_boost_power`).
+
+        A 202 response means the command was queued for the device, not applied:
+        the result then carries ``"queued": True``.
         """
+        if period not in BOOST_PERIOD_LABELS:
+            raise ValueError(f"period must be one of {sorted(BOOST_PERIOD_LABELS)}, got {period!r}")
         base = (data_server or self._data_server).rstrip("/")
-        r = self.session.post(
-            f"{base}/api/client/device/{device_id}/boost",
-            data=urllib.parse.urlencode({"period": period}),
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        return self._handle_raw(r)
+        return self._data_post(f"{base}/api/client/device/{device_id}/boost", urllib.parse.urlencode({"period": period}))
 
     def cancel_boost(self, device_id: str, data_server: str | None = None) -> dict:
         """Cancel a manual boost.
@@ -595,23 +648,31 @@ class EnergipaysClient:
         to cancel — there is no separate cancel endpoint.
         """
         base = (data_server or self._data_server).rstrip("/")
-        r = self.session.post(
-            f"{base}/api/client/device/{device_id}/boost",
-            data=urllib.parse.urlencode({"period": 1}),
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        return self._handle_raw(r)
+        return self._data_post(f"{base}/api/client/device/{device_id}/boost", urllib.parse.urlencode({"period": BOOST_PERIOD_CANCEL}))
 
     def cancel_weather_boost(self, device_id: str, data_server: str | None = None) -> dict:
         """POST data-server/api/client/device/{id}/weather/boost/cancel"""
         base = (data_server or self._data_server).rstrip("/")
-        r = self.session.post(
-            f"{base}/api/client/device/{device_id}/weather/boost/cancel",
-            data="", headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
-        return self._handle_raw(r)
+        return self._data_post(f"{base}/api/client/device/{device_id}/weather/boost/cancel", "")
 
     # ── Internal helpers ──────────────────────────────────────────────────────
+
+    def _data_post(self, url: str, data: str) -> dict:
+        """POST form data to a data server (unencrypted, Bearer token).
+
+        Same token handling as the main host (issue #3): refresh first when the JWT
+        is near expiry, and on a 401 refresh and retry once. energipays.com's
+        data-server helper also retries once after a 401, after a 1 s delay.
+        """
+        if self._token_expired():
+            self._ensure_token()
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        r = self.session.post(url, data=data, headers=headers)
+        if r.status_code == 401 and self._can_reauth():
+            time.sleep(DATA_RETRY_DELAY)
+            self._ensure_token()
+            r = self.session.post(url, data=data, headers=headers)
+        return self._handle_raw(r)
 
     def _can_reauth(self) -> bool:
         return bool(self._refresh_token) or bool(self._email and self._password)
@@ -696,15 +757,23 @@ class EnergipaysClient:
             return {"raw": r.text}
 
     def _handle_raw(self, r: requests.Response) -> dict:
-        """Handle unencrypted responses (data server)."""
+        """Handle unencrypted responses (data server).
+
+        HTTP 202 means the device command was queued, not applied (energipays.com
+        ``queueHandler``); it is returned as ``{"queued": True, "status": 202, ...}``
+        so callers can tell it from a plain success.
+        """
         try:
             r.raise_for_status()
         except requests.HTTPError as e:
             return {"error": str(e), "status": r.status_code, "body": r.text[:500]}
         try:
-            return r.json()
+            body = r.json()
         except Exception:
-            return {"raw": r.text}
+            body = {"raw": r.text}
+        if r.status_code == 202:
+            return {"queued": True, "status": 202, "body": body}
+        return body
 
 
 # ── CLI probe ─────────────────────────────────────────────────────────────────
@@ -722,7 +791,7 @@ if __name__ == "__main__":
     password = _PASSWORD or getpass.getpass("Password: ")
 
     client = EnergipaysClient(email=email, password=password, auto_login=False)
-    print("\n→ /api/users/login")
+    print("\n→ /api/auth/login")
     login_resp = client.login()
     # Check the login RESPONSE for a token — not client._token, which may be a
     # stale token preloaded from .token_cache.json and would mask a failed login.

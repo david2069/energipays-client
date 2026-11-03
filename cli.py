@@ -10,7 +10,7 @@ Examples:
   ENERGIPAYS_EMAIL=you@example.com ENERGIPAYS_PASSWORD=secret python cli.py devices
   python cli.py -e you@example.com --password-stdin me   # read password from stdin
   python cli.py stats 00000000-... --from 2026-06-01 --to 2026-06-24
-  python cli.py boost --period 2 --yes                   # 1=30min 2=1h(default) 3=2h
+  python cli.py boost --period 2 --yes                   # 2=1h(default) 3=2h 4=3h
   python cli.py boost --period 2 --power 75 --yes        # set power + boost in one step
   python cli.py cancel --yes                             # cancel running boost
   python cli.py power --percent 75 --yes                 # set boost power without boosting
@@ -222,11 +222,16 @@ def _make_client(args) -> EnergipaysClient:
     client = EnergipaysClient(
         email=email, password=password, base_url=args.base_url, auto_login=False
     )
-    resp = client.login()
-    token = resp.get("access_token") or resp.get("token") or resp.get("accessToken")
-    if not token:
-        _out(resp)
-        sys.exit("Login failed — check your email/password (or the account may use SSO).")
+    # Reuse a cached token (.token_cache.json) when it is still valid; only a
+    # missing or expired one costs a refresh or a password login.
+    if client._token_expired():
+        client._ensure_token()
+    if client._token_expired():
+        resp = client.login()
+        token = resp.get("access_token") or resp.get("token") or resp.get("accessToken")
+        if not token:
+            _out(resp)
+            sys.exit("Login failed — check your email/password (or the account may use SSO).")
     return client
 
 
@@ -252,7 +257,7 @@ def _resolve_device(client: EnergipaysClient, args) -> tuple[str, str, str]:
     If --device is given, look it up in the device list to get the server URL and
     friendly name. Falls back to first device when --device is absent.
     """
-    override = getattr(args, "device", None)
+    override = getattr(args, "device", None) or getattr(args, "device_id", None)
     if not override:
         return _first_device(client)
     # Fetch device list to resolve server + name for the given ID
@@ -573,8 +578,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = add("boost", cmd_boost,
              "trigger a timed boost — checks if already active first")
-    sp.add_argument("--period", type=int, default=2, choices=[1, 2, 3],
-                    help="boost duration: 1=30min, 2=1h (default), 3=2h")
+    sp.add_argument("--period", type=int, default=2, choices=[1, 2, 3, 4],
+                    help="boost period as energipays.com sends it: 2=1h (default), "
+                         "3=2h, 4=3h; 1=30min (the site sends 1 to cancel)")
     sp.add_argument("--power", type=int, choices=[25, 50, 75, 100], default=None,
                     metavar="{25,50,75,100}",
                     help="set boost power %% before starting (omit to keep current setting)")

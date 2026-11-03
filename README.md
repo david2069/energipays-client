@@ -101,7 +101,7 @@ python cli.py stats --from 2026-06-01 --to 2026-06-26   # per-day chart data
 python cli.py key                                   # show the resolved AES key
 
 # Write commands (all require --yes as a safety guard)
-python cli.py boost --period 2 --yes               # start boost: 1=30min 2=1h 3=2h
+python cli.py boost --period 2 --yes               # start boost: 2=1h 3=2h 4=3h
 python cli.py cancel --yes                         # cancel running boost
 python cli.py power --percent 75 --yes             # set boost power: 25/50/75/100%
 python cli.py device-on --yes                      # enable PowerDiverter
@@ -130,7 +130,7 @@ target another:
 
 ```bash
 python cli.py status 00000000-0000-4000-8000-000000000001
-python cli.py boost 00000000-... --period 1 --yes
+python cli.py boost 00000000-... --period 2 --yes
 ```
 
 ---
@@ -167,7 +167,7 @@ device_id = "00000000-0000-4000-8000-000000000001"
 data_server = "https://data-au-1.energipays.com"
 
 # Boost
-client.boost_device(device_id, data_server, period=2)   # 1=30min, 2=1h, 3=2h
+client.boost_device(device_id, data_server, period=2)   # 2=1h, 3=2h, 4=3h (BOOST_PERIODS)
 client.cancel_boost(device_id, data_server)
 
 # Boost power (1=25%, 2=50%, 3=75%, 4=100%)
