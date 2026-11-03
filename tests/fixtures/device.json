@@ -1,0 +1,17 @@
+{
+  "data": {
+    "id": "00000000-0000-4000-8000-000000000001",
+    "name": "Hot water",
+    "server": "https://data-au-1.energipays.com",
+    "group_id": "0",
+    "rule_id": "0",
+    "status_data": {
+      "admin": 1, "customer": 0, "retailer": 1, "evStatus": 0,
+      "heaterStatus": 1, "heaterPumpStatus": 0, "heater2SwitcherStatus": 1,
+      "offpeakSwitcherStatus": 0, "weatherSwitcherStatus": 0,
+      "priorityModeSwitcherStatus": 1, "smartWeatherSwitcherStatus": 0,
+      "solarRestrictionSwitcherStatus": 1, "offpeakTemperatureSwitcherStatus": 1,
+      "rule_customer": "0", "rule_offpeak": "0", "rule_heater2": "0"
+    }
+  }
+}

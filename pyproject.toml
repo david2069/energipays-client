@@ -4,13 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "energipays-client"
-version = "0.2.0"
+version = "0.3.0"
 description = "Python client for the Energipays cloud API"
 requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31",
     "pycryptodome>=3.19",
 ]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["live: talks to the live Energipays cloud (never run in CI)"]
 
 [tool.setuptools]
 py-modules = ["energipays", "cli", "extract_key", "find_login", "diag_login"]
