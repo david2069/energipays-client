@@ -1,0 +1,71 @@
+MIT License
+
+Copyright (c) 2026 david2069
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+ADDITIONAL TERMS
+================================================================================
+
+These Additional Terms accompany and supplement the MIT License above. By using,
+copying, modifying, or distributing the Software you accept them.
+
+1. UNOFFICIAL — NO AFFILIATION
+   This is UNOFFICIAL software. It is NOT affiliated with, endorsed by, approved
+   by, or supported by Power Diverter Pty Ltd, the operator of Energipays
+   (https://energipays.com) and the PowerDiverter product. "Energipays" and
+   "PowerDiverter" are names of Power Diverter Pty Ltd, used here only to say
+   what the Software works with.
+
+2. UNDOCUMENTED API — MAY STOP WORKING AT ANY TIME
+   The Software uses the private, undocumented API behind the energipays.com
+   website, worked out by reverse-engineering that website. The API is intended
+   for Energipays' own apps, not for third-party use. Power Diverter Pty Ltd may
+   change or withdraw the API, block or restrict access to it, change its terms,
+   or discontinue or terminate the Energipays service at any time and without
+   notice. The Software may then stop working, in part or entirely.
+
+3. YOUR ACCOUNT, THEIR TERMS AND PRIVACY POLICY
+   The Software signs in to energipays.com with your own account. Your use of
+   that account and of the Energipays service remains subject to Power Diverter
+   Pty Ltd's terms and to its privacy policy:
+   https://energipays.com/privacy-policy
+   You are responsible for that use, including any action the provider takes on
+   your account because of it.
+
+4. NO SUPPORT FROM ENERGIPAYS
+   Do NOT contact Energipays or Power Diverter Pty Ltd support about this
+   Software. Raise issues, defects, or feature requests on GitHub:
+   https://github.com/david2069/energipays-client/issues
+
+5. INTENT & RISK
+   The Software can send commands that change a real hot-water device (boost,
+   on/off, rules). It is provided for informational and educational purposes,
+   AS-IS, with no warranty of fitness for any purpose. Any use — personal or
+   commercial — is permitted under the MIT License above and is entirely at
+   your own risk.
+
+6. NOTICE
+   As the MIT License above requires, the copyright notice and this permission
+   notice (including these Additional Terms) shall be included in all copies or
+   substantial portions of the Software. Retaining it in copies, forks,
+   derivatives, and AI-assisted works keeps the unofficial-use and support
+   context travelling with the code.

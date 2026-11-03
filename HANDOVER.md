@@ -73,7 +73,7 @@ Access token lifetime is **300s**. `refresh_token` is an opaque (non-JWT) string
   `value`=base64(ciphertext), `iv`=base64(16B), `mac`=HMAC-SHA256(key, iv_b64+value_b64).
 - Key is in the JS bundle (`main.*.chunk.js`), rotates per deploy. Resolved at
   runtime: `ENERGIPAYS_KEY` env → `.key_cache.json` → dynamic extraction
-  (validated by round-trip decrypt). Current key: `w0oBD4tK…LqwA=` (in cache).
+  (validated by round-trip decrypt). The key is never written to the repo.
 - **All encrypted POSTs are form-urlencoded `payload=…`** (confirmed for
   `/api/auth/login` and `/api/users/settings`), NOT JSON. `_post()` was fixed to
   match. Encrypted responses come back as JSON `{"payload": …}`.
@@ -166,7 +166,7 @@ Client method: `set_boost_power(device_id, power_idx)`.
 
 ## Device object + scheduling (from live `GET /api/client/device/{id}`)
 
-The Sunamp device (`d2784559-…`) returns a large object. Highlights useful for
+The Sunamp device (`00000000-…`) returns a large object. Highlights useful for
 building features:
 - Live telemetry under `telemetryData` (water temps, voltages, power, SoC, signal,
   `boostStatus`, `currentDRM`, etc.) and a flattened `status_data`.

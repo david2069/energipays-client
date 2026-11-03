@@ -9,7 +9,7 @@ Examples:
   python cli.py --email you@example.com --password secret me
   ENERGIPAYS_EMAIL=you@example.com ENERGIPAYS_PASSWORD=secret python cli.py devices
   python cli.py -e you@example.com --password-stdin me   # read password from stdin
-  python cli.py stats d2784559-... --from 2026-06-01 --to 2026-06-24
+  python cli.py stats 00000000-... --from 2026-06-01 --to 2026-06-24
   python cli.py boost --period 2 --yes                   # 1=30min 2=1h(default) 3=2h
   python cli.py boost --period 2 --power 75 --yes        # set power + boost in one step
   python cli.py cancel --yes                             # cancel running boost

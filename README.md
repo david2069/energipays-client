@@ -5,9 +5,20 @@ An unofficial locally self-hosted standalone Python client library and CLI for t
 The API handles AES-256-CBC encrypted requests, credential-based JWT authentication, and
 device control — no browser required.
 
-NOTE: This software package is NOT affilated with Energipays and is provided "as is" with NO warranty, NO support nor is acknowledged or endorsed nor is it any way approved for use by the vendor. Any use is at your own risk and without any support by the author(s) nor Engeripays.
-
-This software was developed by reverse engineering the web portal and as such my cease to work at any time. This may be due to changes imposed by Energipays and/or should the Cloud service no longer be available in it's current form.
+> **Unofficial — not affiliated with Energipays.** This software is not affiliated with,
+> endorsed by, approved by, or supported by Power Diverter Pty Ltd, the operator of
+> [Energipays](https://energipays.com). It is provided "as is", with no warranty and no
+> support from the author(s) or from Energipays. Use it at your own risk.
+>
+> It uses the private, undocumented API behind the energipays.com website, worked out by
+> reverse-engineering that site. Power Diverter Pty Ltd may change or block that API, or
+> change or terminate the Energipays service, at any time and without notice, and this
+> software may then stop working.
+>
+> It signs in with your own Energipays account, so your use remains subject to their terms
+> and their [privacy policy](https://energipays.com/privacy-policy). Do not contact
+> Energipays support about this software; raise issues on
+> [GitHub](https://github.com/david2069/energipays-client/issues). See [LICENSE](LICENSE).
 
 
 
@@ -118,8 +129,8 @@ All commands default to the first device on your account. Pass a device ID to
 target another:
 
 ```bash
-python cli.py status d2784559-3e77-4af9-a872-ca03b0b2728d
-python cli.py boost d2784559-... --period 1 --yes
+python cli.py status 00000000-0000-4000-8000-000000000001
+python cli.py boost 00000000-... --period 1 --yes
 ```
 
 ---
@@ -143,16 +154,16 @@ print(client.devices())
 print(client.rules())
 
 # Live device status (returns telemetry + status_data)
-status = client.device_status(["d2784559-3e77-4af9-a872-ca03b0b2728d"])
+status = client.device_status(["00000000-0000-4000-8000-000000000001"])
 
 # Historical data
-stats = client.statistics("d2784559-...", "https://data-au-1.energipays.com")
+stats = client.statistics("00000000-...", "https://data-au-1.energipays.com")
 ```
 
 ### Device control
 
 ```python
-device_id = "d2784559-3e77-4af9-a872-ca03b0b2728d"
+device_id = "00000000-0000-4000-8000-000000000001"
 data_server = "https://data-au-1.energipays.com"
 
 # Boost
